@@ -91,9 +91,6 @@ type ErrorResponse = {
 
 type RatingFilter = "all" | "rated" | "unrated" | "1" | "2" | "3" | "4" | "5";
 
-const initialShareText =
-  "1.02 mDh:/ 09/16 O@x.Sl 回复 @cfc的评论 加长版来咯# 捣蒜舞 # 捣蒜舞挑战 # 捣蒜舞加长版 # 原声 # 加长版 https://v.douyin.com/h5H9gfOg0iM/ 复制此链接，打开Dou音搜索，直接观看视频！";
-
 const filterOptions: Array<{ label: string; value: RatingFilter }> = [
   { label: "全部", value: "all" },
   { label: "已评分", value: "rated" },
@@ -106,7 +103,7 @@ const filterOptions: Array<{ label: string; value: RatingFilter }> = [
 ];
 
 export default function App() {
-  const [shareText, setShareText] = useState(initialShareText);
+  const [shareText, setShareText] = useState("");
   const [videos, setVideos] = useState<VideoRecord[]>([]);
   const [tags, setTags] = useState<TagRecord[]>([]);
   const [selectedVideo, setSelectedVideo] = useState<VideoRecord | null>(null);
