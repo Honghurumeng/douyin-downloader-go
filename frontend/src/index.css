@@ -1,0 +1,52 @@
+@import "tailwindcss";
+
+:root {
+  --canvas: #f5f7fb;
+  --surface-subtle: #f7f9fc;
+  --surface-alt: #eef2f8;
+  --surface-accent: #e8f0ff;
+  --foreground: #172033;
+  --foreground-muted: #49566c;
+  --foreground-soft: #748198;
+  --primary: #2158d5;
+  --primary-strong: #1848b2;
+  --border: #dbe3ef;
+  --border-strong: #b8c4d8;
+  --ring: #2158d5;
+  font-family: "SF Pro Text", "Segoe UI", "IBM Plex Sans", sans-serif;
+  color: var(--foreground);
+  background: var(--canvas);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+code {
+  font-family: "SFMono-Regular", "JetBrains Mono", "Menlo", monospace;
+}

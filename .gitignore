@@ -1,0 +1,25 @@
+# OS/editor noise
+.DS_Store
+Thumbs.db
+
+# Runtime data
+data/
+build/data/
+*.log
+
+# Frontend dependencies and build output
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+
+# Go build output and caches
+.gocache/
+server
+douyin-server
+douyin-server-*
+build/
+
+# Test and coverage artifacts
+coverage.out
+*.test
