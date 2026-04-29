@@ -72,19 +72,23 @@ cd ..
 go build -trimpath -ldflags='-s -w' -o build/douyin-server ./cmd/server
 ```
 
-### 构建 Linux 版本
+### 一次生成三个二进制文件
 
-Linux AMD64：
+下面的命令会先确保 `build/` 目录存在，然后一次生成这三个目标：
+
+- `build/douyin-server-darwin-arm64`
+- `build/douyin-server-linux-amd64`
+- `build/douyin-server-linux-arm64`
 
 ```bash
+mkdir -p build
+
+GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o build/douyin-server-darwin-arm64 ./cmd/server
 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o build/douyin-server-linux-amd64 ./cmd/server
-```
-
-Linux ARM64：
-
-```bash
 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o build/douyin-server-linux-arm64 ./cmd/server
 ```
+
+如果只想生成其中一个目标，也可以单独执行对应那一行命令。
 
 ## 启动方式
 

@@ -1,4 +1,4 @@
-import { Download, LoaderCircle, Play, Plus, Star, Tag, Trash2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, LoaderCircle, Play, Plus, Star, Tag, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState, type ChangeEvent } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -137,6 +137,17 @@ export default function App() {
       totalDurationMinutes: Math.round((totalDurationSeconds / 60) * 10) / 10,
     };
   }, [videos]);
+
+  const selectedVideoIndex = useMemo(() => {
+    if (!selectedVideo) {
+      return -1;
+    }
+
+    return videos.findIndex((video) => video.videoId === selectedVideo.videoId);
+  }, [selectedVideo, videos]);
+
+  const canSelectPreviousVideo = selectedVideoIndex > 0;
+  const canSelectNextVideo = selectedVideoIndex >= 0 && selectedVideoIndex < videos.length - 1;
 
   async function loadTags() {
     try {
@@ -395,6 +406,19 @@ export default function App() {
     setSelectedTagIds((current) =>
       current.includes(tagId) ? current.filter((id) => id !== tagId) : [...current, tagId],
     );
+  }
+
+  function selectAdjacentVideo(direction: -1 | 1) {
+    if (selectedVideoIndex < 0) {
+      return;
+    }
+
+    const nextVideo = videos[selectedVideoIndex + direction];
+    if (!nextVideo) {
+      return;
+    }
+
+    setSelectedVideo(nextVideo);
   }
 
   return (
@@ -671,11 +695,49 @@ export default function App() {
 
             <div className="grid gap-6 lg:grid-cols-[minmax(0,1.4fr)_320px]">
               <div className="space-y-4">
+                <div className="flex flex-col gap-3 rounded-xl border border-[color:var(--border)] bg-[color:var(--surface-subtle)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <div className="text-xs font-medium text-[color:var(--foreground-soft)]">当前筛选结果</div>
+                    <div className="mt-1 text-sm text-[color:var(--foreground-muted)]">
+                      {selectedVideoIndex >= 0
+                        ? `第 ${selectedVideoIndex + 1} 个，共 ${videos.length} 个`
+                        : videos.length > 0
+                          ? "当前视频不在当前筛选结果中，无法切换。"
+                          : "当前筛选结果为空。"}
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => selectAdjacentVideo(-1)}
+                      disabled={!canSelectPreviousVideo}
+                    >
+                      <ChevronLeft className="mr-1 h-3.5 w-3.5" />
+                      上一个
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => selectAdjacentVideo(1)}
+                      disabled={!canSelectNextVideo}
+                    >
+                      下一个
+                      <ChevronRight className="ml-1 h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+
                 <div className="overflow-hidden rounded-xl border border-[color:var(--border)] bg-black p-2">
                   <video
+                    key={selectedVideo.videoId}
                     src={selectedVideo.localUrl}
                     poster={selectedVideo.coverUrl}
+                    autoPlay
                     controls
+                    loop
+                    playsInline
                     className="mx-auto block max-h-[72vh] w-auto max-w-full bg-black"
                   />
                 </div>
