@@ -426,14 +426,10 @@ export default function App() {
       <div className="absolute inset-0 -z-10 bg-[radial-gradient(circle_at_top_left,_rgba(37,99,235,0.07),_transparent_28%),linear-gradient(to_bottom,_rgba(255,255,255,0.75),_rgba(255,255,255,0.95))]" />
       <div className="absolute inset-0 -z-10 opacity-60 [background-image:linear-gradient(rgba(148,163,184,0.12)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.12)_1px,transparent_1px)] [background-size:24px_24px]" />
 
-      <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-6 sm:px-6 lg:px-8">
+      <div className="mx-auto flex min-h-screen w-full max-w-[1720px] flex-col px-4 py-6 sm:px-6 lg:px-8">
         <header className="flex flex-col gap-4 border-b border-[color:var(--border)] pb-6 md:flex-row md:items-end md:justify-between">
           <div className="max-w-2xl">
-            <p className="text-sm font-medium text-[color:var(--primary)]">本地视频工作台</p>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight">抖音分享链接下载、评分与标签</h1>
-            <p className="mt-3 text-sm leading-6 text-[color:var(--foreground-muted)]">
-              输入分享文案或短链，服务端会用纯 Go 解析抖音页面、下载视频和封面到本地，并把评分、标签和文件信息保存在 SQLite 中。
-            </p>
+            <h1 className="text-3xl font-semibold tracking-tight">抖音分享链接下载、评分与标签</h1>
           </div>
 
           <div className="grid grid-cols-3 gap-3 md:min-w-[360px]">
@@ -443,9 +439,9 @@ export default function App() {
           </div>
         </header>
 
-        <main className="mt-6 grid flex-1 gap-6 xl:grid-cols-[380px_minmax(0,1fr)]">
-          <div className="space-y-4">
-            <Card className="h-fit">
+        <main className="mt-6 flex-1 space-y-6">
+          <section className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+            <Card className="h-full">
               <CardHeader>
                 <CardTitle>获取视频</CardTitle>
                 <CardDescription>支持直接粘贴整段分享文案，后端会自动提取其中的抖音短链。</CardDescription>
@@ -459,12 +455,6 @@ export default function App() {
                     onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setShareText(event.target.value)}
                     placeholder="粘贴抖音分享链接或整段分享文案"
                   />
-                </div>
-
-                <div className="rounded-lg border border-dashed border-[color:var(--border)] bg-[color:var(--surface-subtle)] px-3 py-3 text-sm text-[color:var(--foreground-muted)]">
-                  数据会保存到当前二进制所在目录下的 <code className="font-mono text-[13px] text-[color:var(--foreground)]">data/videos/</code>、
-                  <code className="font-mono text-[13px] text-[color:var(--foreground)]">data/covers/</code> 和{" "}
-                  <code className="font-mono text-[13px] text-[color:var(--foreground)]">data/videos.db</code>。
                 </div>
 
                 <Button className="w-full" size="lg" onClick={handleDownload} disabled={submitting}>
@@ -486,7 +476,7 @@ export default function App() {
               </CardContent>
             </Card>
 
-            <Card>
+            <Card className="h-full">
               <CardHeader>
                 <CardTitle>标签管理</CardTitle>
                 <CardDescription>可创建、删除标签。一个视频可以绑定多个标签，筛选时会按所选标签的交集返回。</CardDescription>
@@ -552,13 +542,12 @@ export default function App() {
                 )}
               </CardContent>
             </Card>
-          </div>
+          </section>
 
           <section className="space-y-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <h2 className="text-lg font-semibold">已保存的视频</h2>
-                <p className="text-sm text-[color:var(--foreground-muted)]">支持按评分和多个标签交叉筛选，点击条目打开播放、评分、标签和删除窗口。</p>
               </div>
               <Button variant="secondary" onClick={() => void Promise.all([loadVideos(ratingFilter, selectedTagIds), loadTags()])} disabled={loading}>
                 {loading ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : null}
@@ -608,12 +597,12 @@ export default function App() {
                     })}
                   </div>
                 ) : (
-                  <div className="text-sm text-[color:var(--foreground-muted)]">还没有标签，先在左侧创建后再筛选。</div>
+                  <div className="text-sm text-[color:var(--foreground-muted)]">还没有标签，先在上方创建后再筛选。</div>
                 )}
               </div>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
               {videos.map((video) => (
                 <button
                   key={video.videoId}
@@ -622,7 +611,7 @@ export default function App() {
                   className="text-left"
                 >
                   <Card className="h-full transition-colors hover:border-[color:var(--border-strong)]">
-                    <div className="flex h-80 items-center justify-center overflow-hidden rounded-t-xl bg-[color:var(--surface-subtle)] p-3">
+                    <div className="flex h-72 items-center justify-center overflow-hidden rounded-t-xl bg-[color:var(--surface-subtle)] p-3">
                       <img
                         src={video.coverUrl}
                         alt={video.title}
@@ -650,12 +639,9 @@ export default function App() {
                         </div>
                       ) : null}
 
-                      <div>
-                        <h3 className="line-clamp-2 text-sm font-semibold leading-6">{video.title}</h3>
-                        <p className="mt-2 line-clamp-2 text-sm leading-6 text-[color:var(--foreground-muted)]">
-                          {video.lastSourceInput}
-                        </p>
-                      </div>
+                      <h3 className="line-clamp-2 text-sm font-semibold leading-6">
+                        {video.title || video.description || "未命名视频"}
+                      </h3>
 
                       <div className="flex items-center justify-between text-xs text-[color:var(--foreground-soft)]">
                         <span>{formatDuration(video.duration)}</span>
@@ -667,12 +653,12 @@ export default function App() {
               ))}
 
               {!loading && videos.length === 0 ? (
-                <Card className="md:col-span-2 2xl:col-span-3">
+                <Card className="col-span-full">
                   <CardContent className="flex min-h-56 flex-col items-center justify-center py-10 text-center">
                     <Play className="h-10 w-10 text-[color:var(--foreground-soft)]" />
                     <h3 className="mt-4 text-base font-semibold">当前筛选下没有视频</h3>
                     <p className="mt-2 max-w-md text-sm leading-6 text-[color:var(--foreground-muted)]">
-                      你可以先在左侧保存一个抖音视频，或者调整上方评分与标签筛选条件查看其他内容。
+                      你可以先在上方保存一个抖音视频，或者调整上方评分与标签筛选条件查看其他内容。
                     </p>
                   </CardContent>
                 </Card>
@@ -688,7 +674,8 @@ export default function App() {
             <DialogHeader>
               <DialogTitle>{selectedVideo.title}</DialogTitle>
               <DialogDescription>
-                来自 {selectedVideo.author}，本地文件路径为{" "}
+                来自 {selectedVideo.author}
+                {selectedVideo.authorId ? `（抖音号 ${selectedVideo.authorId}）` : ""}，本地文件路径为{" "}
                 <code className="font-mono text-[13px] text-[color:var(--foreground)]">{selectedVideo.localFile}</code>
               </DialogDescription>
             </DialogHeader>
@@ -802,7 +789,7 @@ export default function App() {
                         })}
                       </div>
                     ) : (
-                      <div className="text-sm text-[color:var(--foreground-muted)]">还没有标签，先在左侧创建后再给视频绑定。</div>
+                      <div className="text-sm text-[color:var(--foreground-muted)]">还没有标签，先在上方创建后再给视频绑定。</div>
                     )}
 
                     <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--surface-subtle)] px-3 py-3 text-sm text-[color:var(--foreground-muted)]">
@@ -819,6 +806,8 @@ export default function App() {
                     <CardTitle className="text-sm">来源信息</CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-3 text-sm text-[color:var(--foreground-muted)]">
+                    <InfoRow label="作者昵称" value={selectedVideo.author} />
+                    <InfoRow label="抖音号" value={selectedVideo.authorId || "未获取"} />
                     <InfoRow label="封面来源" value={selectedVideo.coverSourceUrl || selectedVideo.coverUrl} />
                     <InfoRow label="本地封面" value={selectedVideo.coverLocalFile || "未本地化"} />
                     <InfoRow label="分享短链" value={selectedVideo.shareUrl} />

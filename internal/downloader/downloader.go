@@ -91,6 +91,7 @@ type awemeDetail struct {
 type authorInfo struct {
 	Nickname string `json:"nickname"`
 	UniqueID string `json:"unique_id"`
+	ShortID  string `json:"short_id"`
 }
 
 type videoInfo struct {
@@ -388,7 +389,7 @@ func extractedVideoFromDetail(detail *awemeDetail) *ExtractedVideo {
 		Title:             cleanText(detail.Desc),
 		Description:       cleanText(detail.Desc),
 		Author:            cleanText(detail.Author.Nickname),
-		AuthorID:          detail.Author.UniqueID,
+		AuthorID:          resolveAuthorID(detail.Author),
 		VideoURI:          firstNonEmpty(videoData.DownloadAddr.URI, videoData.PlayAddr.URI, videoData.PlayAddrH264.URI, videoData.PlayAddrLowbr.URI),
 		VideoURL:          downloadURL,
 		VideoDownloadURL:  downloadURL,
@@ -405,6 +406,10 @@ func extractedVideoFromDetail(detail *awemeDetail) *ExtractedVideo {
 		CollectCount:      detail.Statistics.CollectCount,
 		ContentType:       "video",
 	}
+}
+
+func resolveAuthorID(author authorInfo) string {
+	return cleanText(firstNonEmpty(author.UniqueID, author.ShortID))
 }
 
 func extractShareURL(input string) (string, error) {
