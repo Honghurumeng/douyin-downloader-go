@@ -34,6 +34,8 @@ body,
 
 body {
   margin: 0;
+  color: var(--foreground);
+  background: var(--canvas);
 }
 
 button,
@@ -49,4 +51,48 @@ img {
 
 code {
   font-family: "SFMono-Regular", "JetBrains Mono", "Menlo", monospace;
+}
+
+::selection {
+  background: rgba(10, 114, 239, 0.16);
+}
+
+.vercel-panel {
+  box-shadow:
+    rgba(0, 0, 0, 0.08) 0 0 0 1px,
+    rgba(0, 0, 0, 0.04) 0 2px 2px,
+    rgba(0, 0, 0, 0.04) 0 8px 8px -8px,
+    #fafafa 0 0 0 1px;
+}
+
+.vercel-rule {
+  box-shadow: rgba(0, 0, 0, 0.08) 0 0 0 1px;
+}
+
+.runway-panel {
+  border: 1px solid #27272a;
+  background: rgba(3, 3, 3, 0.94);
+}
+
+.runway-surface {
+  border: 1px solid #27272a;
+  background: #0a0a0a;
+}
+
+.runway-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: #7d848e;
+}
+
+.runway-title {
+  line-height: 0.95;
+  letter-spacing: -0.06em;
+}
+
+.runway-copy {
+  line-height: 1.45;
+  letter-spacing: -0.02em;
 }
