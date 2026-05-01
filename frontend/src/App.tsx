@@ -7,7 +7,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -671,13 +670,8 @@ export default function App() {
       <Dialog open={Boolean(selectedVideo)} onOpenChange={(open: boolean) => !open && setSelectedVideo(null)}>
         {selectedVideo ? (
           <DialogContent className="max-h-[90vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle>{selectedVideo.title}</DialogTitle>
-              <DialogDescription>
-                来自 {selectedVideo.author}
-                {selectedVideo.authorId ? `（抖音号 ${selectedVideo.authorId}）` : ""}，本地文件路径为{" "}
-                <code className="font-mono text-[13px] text-[color:var(--foreground)]">{selectedVideo.localFile}</code>
-              </DialogDescription>
+            <DialogHeader className="sr-only">
+              <DialogTitle>{selectedVideo.title || selectedVideo.description || "未命名视频"}</DialogTitle>
             </DialogHeader>
 
             <div className="grid gap-6 lg:grid-cols-[minmax(0,1.4fr)_320px]">
@@ -728,6 +722,10 @@ export default function App() {
                     className="mx-auto block max-h-[72vh] w-auto max-w-full bg-black"
                   />
                 </div>
+
+                <h2 className="text-lg font-semibold leading-7 text-[color:var(--foreground)]">
+                  {selectedVideo.title || selectedVideo.description || "未命名视频"}
+                </h2>
 
                 <div className="grid gap-3 sm:grid-cols-2">
                   <Metric label="时长" value={formatDuration(selectedVideo.duration)} />
