@@ -15,10 +15,10 @@ frontend/*.tsbuildinfo
 
 # Go build output and caches
 .gocache/
-server
-douyin-server
-douyin-server-*
-build/
+/server
+/douyin-server
+/douyin-server-*
+/build/
 
 # Test and coverage artifacts
 coverage.out

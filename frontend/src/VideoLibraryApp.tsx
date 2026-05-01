@@ -1,18 +1,14 @@
-import { ChevronLeft, ChevronRight, Download, LoaderCircle, Play, Plus, Star, Tag, Trash2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, LoaderCircle, LogOut, Play, Plus, Star, Tag, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState, type ChangeEvent } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { getLoginRoute, withBasePath } from "@/lib/app-paths";
 import { cn } from "@/lib/utils";
 
 type TagRecord = {
@@ -88,6 +84,11 @@ type ErrorResponse = {
   error: string;
 };
 
+type AuthSessionResponse = {
+  enabled: boolean;
+  authenticated: boolean;
+};
+
 type RatingFilter = "all" | "rated" | "unrated" | "1" | "2" | "3" | "4" | "5";
 
 const filterOptions: Array<{ label: string; value: RatingFilter }> = [
@@ -101,7 +102,9 @@ const filterOptions: Array<{ label: string; value: RatingFilter }> = [
   { label: "1 分", value: "1" },
 ];
 
-export default function App() {
+export default function VideoLibraryApp() {
+  const [authEnabled, setAuthEnabled] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [shareText, setShareText] = useState("");
   const [videos, setVideos] = useState<VideoRecord[]>([]);
   const [tags, setTags] = useState<TagRecord[]>([]);
@@ -120,6 +123,7 @@ export default function App() {
   const [error, setError] = useState("");
 
   useEffect(() => {
+    void loadSession();
     void loadTags();
   }, []);
 
@@ -148,14 +152,56 @@ export default function App() {
   const canSelectPreviousVideo = selectedVideoIndex > 0;
   const canSelectNextVideo = selectedVideoIndex >= 0 && selectedVideoIndex < videos.length - 1;
 
-  async function loadTags() {
+  function redirectToLogin() {
+    window.location.replace(getLoginRoute());
+  }
+
+  async function requestJSON<T extends object>(
+    input: string,
+    init?: RequestInit,
+    unauthorizedMessage = "登录状态已失效，请重新输入密码",
+  ) {
+    const response = await fetch(withBasePath(input), init);
+
+    if (response.status === 401) {
+      redirectToLogin();
+      throw new Error(unauthorizedMessage);
+    }
+
+    const data = (await response.json()) as T | ErrorResponse;
+    if (!response.ok) {
+      throw new Error("error" in data ? data.error : "请求失败");
+    }
+
+    return data as T;
+  }
+
+  async function loadSession() {
     try {
-      const response = await fetch(withBasePath("/api/tags"));
+      const response = await fetch(withBasePath("/api/auth/session"));
+      if (response.status === 401) {
+        redirectToLogin();
+        return;
+      }
       if (!response.ok) {
-        throw new Error("加载标签失败");
+        throw new Error("获取登录状态失败");
       }
 
-      const data = (await response.json()) as TagListResponse;
+      const data = (await response.json()) as AuthSessionResponse;
+      if (!data.authenticated) {
+        redirectToLogin();
+        return;
+      }
+
+      setAuthEnabled(data.enabled);
+    } catch (sessionError) {
+      setError(sessionError instanceof Error ? sessionError.message : "获取登录状态失败");
+    }
+  }
+
+  async function loadTags() {
+    try {
+      const data = await requestJSON<TagListResponse>("/api/tags");
       setTags(data.tags);
       setSelectedVideo((current) =>
         current
@@ -183,12 +229,7 @@ export default function App() {
         search.set("tags", tagIDs.join(","));
       }
 
-      const response = await fetch(withBasePath(`/api/videos${search.size > 0 ? `?${search.toString()}` : ""}`));
-      if (!response.ok) {
-        throw new Error("加载视频列表失败");
-      }
-
-      const data = (await response.json()) as ListResponse;
+      const data = await requestJSON<ListResponse>(`/api/videos${search.size > 0 ? `?${search.toString()}` : ""}`);
       setVideos(data.videos);
       setSelectedVideo((current) =>
         current ? data.videos.find((video) => video.videoId === current.videoId) ?? current : null,
@@ -211,7 +252,7 @@ export default function App() {
     setMessage("");
 
     try {
-      const response = await fetch(withBasePath("/api/videos"), {
+      const payload = await requestJSON<DownloadResponse>("/api/videos", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -219,12 +260,6 @@ export default function App() {
         body: JSON.stringify({ shareText }),
       });
 
-      const data = (await response.json()) as DownloadResponse | ErrorResponse;
-      if (!response.ok) {
-        throw new Error("error" in data ? data.error : "下载失败");
-      }
-
-      const payload = data as DownloadResponse;
       setMessage(payload.alreadyStored ? "该视频已存在，本次直接复用本地文件。" : "视频已解析并保存到本地。");
       setShareText("");
       await Promise.all([loadVideos(ratingFilter, selectedTagIds), loadTags()]);
@@ -241,20 +276,13 @@ export default function App() {
     setError("");
 
     try {
-      const response = await fetch(withBasePath(`/api/videos/${videoId}/rating`), {
+      const payload = await requestJSON<RatingResponse>(`/api/videos/${videoId}/rating`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ rating }),
       });
-
-      const data = (await response.json()) as RatingResponse | ErrorResponse;
-      if (!response.ok) {
-        throw new Error("error" in data ? data.error : "评分保存失败");
-      }
-
-      const payload = data as RatingResponse;
       await loadVideos(ratingFilter, selectedTagIds);
       setSelectedVideo(payload.video);
     } catch (ratingError) {
@@ -274,20 +302,13 @@ export default function App() {
     setError("");
 
     try {
-      const response = await fetch(withBasePath(`/api/videos/${video.videoId}/tags`), {
+      const payload = await requestJSON<RatingResponse>(`/api/videos/${video.videoId}/tags`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ tagIds: nextTagIds }),
       });
-
-      const data = (await response.json()) as RatingResponse | ErrorResponse;
-      if (!response.ok) {
-        throw new Error("error" in data ? data.error : "更新标签失败");
-      }
-
-      const payload = data as RatingResponse;
       await Promise.all([loadVideos(ratingFilter, selectedTagIds), loadTags()]);
       setSelectedVideo(payload.video);
     } catch (tagError) {
@@ -308,7 +329,7 @@ export default function App() {
     setMessage("");
 
     try {
-      const response = await fetch(withBasePath("/api/tags"), {
+      const data = await requestJSON<TagMutationResponse>("/api/tags", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -316,12 +337,7 @@ export default function App() {
         body: JSON.stringify({ name: newTagName }),
       });
 
-      const data = (await response.json()) as TagMutationResponse | ErrorResponse;
-      if (!response.ok) {
-        throw new Error("error" in data ? data.error : "创建标签失败");
-      }
-
-      setMessage(`标签“${(data as TagMutationResponse).tag.name}”已创建。`);
+      setMessage(`标签“${data.tag.name}”已创建。`);
       setNewTagName("");
       await loadTags();
     } catch (tagError) {
@@ -344,14 +360,9 @@ export default function App() {
     const nextSelectedTagIds = selectedTagIds.filter((id) => id !== tag.id);
 
     try {
-      const response = await fetch(withBasePath(`/api/tags/${tag.id}`), {
+      await requestJSON<DeleteResponse>(`/api/tags/${tag.id}`, {
         method: "DELETE",
       });
-
-      const data = (await response.json()) as DeleteResponse | ErrorResponse;
-      if (!response.ok) {
-        throw new Error("error" in data ? data.error : "删除标签失败");
-      }
 
       setSelectedTagIds(nextSelectedTagIds);
       setSelectedVideo((current) =>
@@ -382,14 +393,9 @@ export default function App() {
     setMessage("");
 
     try {
-      const response = await fetch(withBasePath(`/api/videos/${video.videoId}`), {
+      await requestJSON<DeleteResponse>(`/api/videos/${video.videoId}`, {
         method: "DELETE",
       });
-
-      const data = (await response.json()) as DeleteResponse | ErrorResponse;
-      if (!response.ok) {
-        throw new Error("error" in data ? data.error : "删除失败");
-      }
 
       setMessage("视频文件和本地记录已删除。");
       setSelectedVideo((current) => (current?.videoId === video.videoId ? null : current));
@@ -398,6 +404,23 @@ export default function App() {
       setError(deleteError instanceof Error ? deleteError.message : "删除失败");
     } finally {
       setDeletingVideoId(null);
+    }
+  }
+
+  async function handleLogout() {
+    setLoggingOut(true);
+    setError("");
+    setMessage("");
+
+    try {
+      await requestJSON<AuthSessionResponse>("/api/auth/logout", {
+        method: "POST",
+      });
+    } catch (logoutError) {
+      setError(logoutError instanceof Error ? logoutError.message : "退出登录失败");
+    } finally {
+      setLoggingOut(false);
+      redirectToLogin();
     }
   }
 
@@ -431,10 +454,18 @@ export default function App() {
             <h1 className="text-3xl font-semibold tracking-tight">抖音分享链接下载、评分与标签</h1>
           </div>
 
-          <div className="grid grid-cols-3 gap-3 md:min-w-[360px]">
-            <StatCard label="当前结果" value={String(stats.total)} />
-            <StatCard label="已评分" value={String(stats.rated)} />
-            <StatCard label="总时长" value={`${stats.totalDurationMinutes} 分钟`} />
+          <div className="flex flex-col gap-3 md:items-end">
+            <div className="grid grid-cols-3 gap-3 md:min-w-[360px]">
+              <StatCard label="当前结果" value={String(stats.total)} />
+              <StatCard label="已评分" value={String(stats.rated)} />
+              <StatCard label="总时长" value={`${stats.totalDurationMinutes} 分钟`} />
+            </div>
+            {authEnabled ? (
+              <Button variant="ghost" className="gap-2" onClick={() => void handleLogout()} disabled={loggingOut}>
+                {loggingOut ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <LogOut className="h-4 w-4" />}
+                退出登录
+              </Button>
+            ) : null}
           </div>
         </header>
 
@@ -924,33 +955,4 @@ function formatVideoResolution(width: number, height: number) {
   }
 
   return "待补全";
-}
-
-function withBasePath(value: string) {
-  return `${getAppBasePath()}${normalizeAppPath(value)}`;
-}
-
-function getAppBasePath() {
-  if (typeof document === "undefined") {
-    return "";
-  }
-
-  const declaredBasePath = document
-    .querySelector('meta[name="app-base-path"]')
-    ?.getAttribute("content")
-    ?.trim();
-
-  if (!declaredBasePath || declaredBasePath === "__APP_BASE_PATH__" || declaredBasePath === "/") {
-    return "";
-  }
-
-  return `/${declaredBasePath.replace(/^\/+|\/+$/g, "")}`;
-}
-
-function normalizeAppPath(value: string) {
-  if (!value) {
-    return "/";
-  }
-
-  return value.startsWith("/") ? value : `/${value}`;
 }

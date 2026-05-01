@@ -14,6 +14,8 @@
 - 一个视频可绑定多个标签
 - 按评分筛选
 - 按多个标签交集筛选
+- 支持服务端密码登录，未校验前不会返回视频页数据
+- 登录失败次数过多时会临时限流
 - 前端打包并嵌入到单个二进制中
 - 支持部署在根路径 `/` 或子路径，例如 `/douyin/`
 
@@ -97,13 +99,13 @@ GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o build/douyin-serv
 服务直接挂在域名根路径时：
 
 ```bash
-PORT=8080 ./build/douyin-server
+LOGIN_PASSWORD='your-password' PORT=8080 ./build/douyin-server
 ```
 
 或 Linux 服务器上：
 
 ```bash
-PORT=8080 ./douyin-server-linux-amd64
+LOGIN_PASSWORD='your-password' PORT=8080 ./douyin-server-linux-amd64
 ```
 
 ### 子路径部署
@@ -111,13 +113,13 @@ PORT=8080 ./douyin-server-linux-amd64
 如果服务需要部署在 `https://example.com/douyin/` 下：
 
 ```bash
-BASE_PATH=/douyin PORT=8090 ./douyin-server-linux-amd64
+BASE_PATH=/douyin LOGIN_PASSWORD='your-password' PORT=8090 ./douyin-server-linux-amd64
 ```
 
 后台运行示例：
 
 ```bash
-nohup env BASE_PATH=/douyin PORT=8090 ./douyin-server-linux-amd64 > douyin-server.log 2>&1 &
+nohup env BASE_PATH=/douyin LOGIN_PASSWORD='your-password' PORT=8090 ./douyin-server-linux-amd64 > douyin-server.log 2>&1 &
 ```
 
 ## 启动参数
@@ -126,12 +128,18 @@ nohup env BASE_PATH=/douyin PORT=8090 ./douyin-server-linux-amd64 > douyin-serve
 | --- | --- | --- |
 | `PORT` | `8080` | HTTP 服务监听端口 |
 | `BASE_PATH` | 空 | 部署路径前缀。为空表示部署在根路径；设置为 `/douyin` 表示部署在 `/douyin/` 下 |
+| `LOGIN_PASSWORD` | 空 | 访问密码。设置后，前端会先显示密码登录页；只有服务端校验成功后，才允许加载视频、标签和本地媒体资源 |
 
 参数说明：
 
 - `BASE_PATH` 建议写成 `/douyin`
 - 不要写成 `/douyin/`
 - 不设置 `BASE_PATH` 时，所有接口和静态资源默认从根路径提供
+- 设置 `LOGIN_PASSWORD` 后，服务端会通过 Cookie 维护登录态
+- 设置 `LOGIN_PASSWORD` 后，访问根路径 `/` 会按登录状态重定向到 `/login/` 或 `/app/`
+- 未登录直接访问 `/app/` 时，服务端会重定向到 `/login/`
+- 同一来源短时间内密码错误过多时，登录接口会返回 `429 Too Many Requests`
+- 如果不设置 `LOGIN_PASSWORD`，服务保持无密码直入模式，兼容原来的部署方式
 
 ## 反向代理示例
 
@@ -167,6 +175,9 @@ location /douyin/ {
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/api/health` | 健康检查 |
+| `GET` | `/api/auth/session` | 获取当前登录状态 |
+| `POST` | `/api/auth/login` | 提交密码并建立登录态 |
+| `POST` | `/api/auth/logout` | 清除登录态 |
 | `GET` | `/api/videos` | 获取视频列表 |
 | `POST` | `/api/videos` | 提交分享文案并下载视频 |
 | `PATCH` | `/api/videos/:id/rating` | 更新评分 |
@@ -178,6 +189,8 @@ location /douyin/ {
 
 当使用 `BASE_PATH=/douyin` 时，实际访问路径会自动变成：
 
+- `/douyin/login/`
+- `/douyin/app/`
 - `/douyin/api/health`
 - `/douyin/api/videos`
 - `/douyin/api/tags`
