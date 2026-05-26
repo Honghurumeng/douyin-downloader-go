@@ -37,41 +37,47 @@ var (
 )
 
 type ExtractedVideo struct {
-	VideoID           string  `json:"video_id"`
-	Title             string  `json:"title"`
-	Description       string  `json:"description"`
-	Author            string  `json:"author"`
-	AuthorID          string  `json:"author_id"`
-	VideoURI          string  `json:"video_uri"`
-	VideoURL          string  `json:"video_url"`
-	VideoDownloadURL  string  `json:"video_download_url"`
-	WatermarkVideoURL string  `json:"watermark_video_url"`
-	CoverURL          string  `json:"cover_url"`
-	VideoWidth        int64   `json:"video_width"`
-	VideoHeight       int64   `json:"video_height"`
-	Duration          float64 `json:"duration"`
-	CreateTime        int64   `json:"create_time"`
-	LikeCount         int64   `json:"like_count"`
-	CommentCount      int64   `json:"comment_count"`
-	ShareCount        int64   `json:"share_count"`
-	PlayCount         int64   `json:"play_count"`
-	CollectCount      int64   `json:"collect_count"`
-	ShareURL          string  `json:"share_url"`
-	OriginalURL       string  `json:"original_url"`
-	ContentType       string  `json:"content_type"`
+	VideoID           string   `json:"video_id"`
+	Title             string   `json:"title"`
+	Description       string   `json:"description"`
+	Author            string   `json:"author"`
+	AuthorID          string   `json:"author_id"`
+	VideoURI          string   `json:"video_uri"`
+	VideoURL          string   `json:"video_url"`
+	VideoDownloadURL  string   `json:"video_download_url"`
+	WatermarkVideoURL string   `json:"watermark_video_url"`
+	CoverURL          string   `json:"cover_url"`
+	VideoWidth        int64    `json:"video_width"`
+	VideoHeight       int64    `json:"video_height"`
+	Duration          float64  `json:"duration"`
+	CreateTime        int64    `json:"create_time"`
+	LikeCount         int64    `json:"like_count"`
+	CommentCount      int64    `json:"comment_count"`
+	ShareCount        int64    `json:"share_count"`
+	PlayCount         int64    `json:"play_count"`
+	CollectCount      int64    `json:"collect_count"`
+	ShareURL          string   `json:"share_url"`
+	OriginalURL       string   `json:"original_url"`
+	ContentType       string   `json:"content_type"`
+	ImageURLs         []string `json:"image_urls"`
+	ImageCount        int      `json:"image_count"`
 }
 
 type routerDataEnvelope struct {
 	LoaderData map[string]json.RawMessage `json:"loaderData"`
 	State      *struct {
 		VideoDetail *awemeDetail `json:"videoDetail"`
+		NoteDetail  *awemeDetail `json:"noteDetail"`
 	} `json:"state"`
 	AwemeDetail *awemeDetail `json:"awemeDetail"`
+	NoteDetail  *awemeDetail `json:"noteDetail"`
 }
 
 type loaderEntry struct {
 	VideoInfoRes *videoInfoResponse `json:"videoInfoRes"`
+	NoteInfoRes  *videoInfoResponse `json:"noteInfoRes"`
 	AwemeDetail  *awemeDetail       `json:"awemeDetail"`
+	NoteDetail   *awemeDetail       `json:"noteDetail"`
 	Detail       *awemeDetail       `json:"detail"`
 }
 
@@ -81,10 +87,16 @@ type videoInfoResponse struct {
 
 type awemeDetail struct {
 	AwemeID    string         `json:"aweme_id"`
+	Title      string         `json:"title"`
 	Desc       string         `json:"desc"`
 	CreateTime int64          `json:"create_time"`
 	Author     authorInfo     `json:"author"`
 	Video      videoInfo      `json:"video"`
+	Images     []imageInfo    `json:"images"`
+	Image      addressInfo    `json:"image"`
+	Cover      addressInfo    `json:"cover"`
+	Thumb      addressInfo    `json:"thumb"`
+	ImagePost  imagePostInfo  `json:"image_post_info"`
 	Statistics statisticsInfo `json:"statistics"`
 }
 
@@ -107,7 +119,29 @@ type videoInfo struct {
 
 type addressInfo struct {
 	URI     string   `json:"uri"`
+	URL     string   `json:"url"`
 	URLList []string `json:"url_list"`
+}
+
+type imagePostInfo struct {
+	Images []imageInfo `json:"images"`
+}
+
+type imageInfo struct {
+	URI                 string      `json:"uri"`
+	URL                 string      `json:"url"`
+	URLList             []string    `json:"url_list"`
+	DownloadURLList     []string    `json:"download_url_list"`
+	DisplayImage        addressInfo `json:"display_image"`
+	OriginImage         addressInfo `json:"origin_image"`
+	Image               addressInfo `json:"image"`
+	Cover               addressInfo `json:"cover"`
+	Thumbnail           addressInfo `json:"thumbnail"`
+	Thumb               addressInfo `json:"thumb"`
+	OwnerWatermarkImage addressInfo `json:"owner_watermark_image"`
+	UserWatermarkImage  addressInfo `json:"user_watermark_image"`
+	Width               int64       `json:"width"`
+	Height              int64       `json:"height"`
 }
 
 type statisticsInfo struct {
@@ -130,28 +164,38 @@ func Extract(ctx context.Context, input string) (*ExtractedVideo, error) {
 	}
 
 	contentType := identifyContentType(finalURL)
-	if contentType != "video" {
-		return nil, fmt.Errorf("unsupported content type %q", contentType)
-	}
 
 	contentID := extractContentIDFromURL(finalURL)
 	if contentID == "" {
 		return nil, fmt.Errorf("could not extract content id from %s", finalURL)
 	}
 
-	detail, err := parseVideoDetail(htmlContent)
+	detail, err := parseContentDetail(htmlContent)
 	if err != nil {
 		return nil, err
 	}
 
-	video := extractedVideoFromDetail(detail)
+	if contentType == "video" && hasNoteImages(detail) {
+		contentType = "note"
+	}
+
+	video := extractedContentFromDetail(detail, contentType)
 	video.VideoID = firstNonEmpty(video.VideoID, contentID)
 	video.ShareURL = shareURL
 	video.OriginalURL = finalURL
 	video.ContentType = contentType
 
-	if video.VideoDownloadURL == "" {
-		return nil, errors.New("missing downloadable video URL")
+	switch contentType {
+	case "video":
+		if video.VideoDownloadURL == "" {
+			return nil, errors.New("missing downloadable video URL")
+		}
+	case "note":
+		if len(video.ImageURLs) == 0 {
+			return nil, errors.New("missing downloadable image URLs")
+		}
+	default:
+		return nil, fmt.Errorf("unsupported content type %q", contentType)
 	}
 
 	return video, nil
@@ -244,6 +288,10 @@ func fetchSharePage(ctx context.Context, shareURL string) (string, string, error
 }
 
 func parseVideoDetail(htmlContent string) (*awemeDetail, error) {
+	return parseContentDetail(htmlContent)
+}
+
+func parseContentDetail(htmlContent string) (*awemeDetail, error) {
 	jsonPayload, err := extractRouterJSON(htmlContent)
 	if err != nil {
 		return nil, err
@@ -258,16 +306,28 @@ func parseVideoDetail(htmlContent string) (*awemeDetail, error) {
 		return detail, nil
 	}
 
-	return nil, errors.New("could not locate video detail in page data")
+	if detail := findDetailInRawJSON(jsonPayload); detail != nil {
+		return detail, nil
+	}
+
+	return nil, errors.New("could not locate content detail in page data")
 }
 
 func findDetail(payload routerDataEnvelope) *awemeDetail {
-	if payload.AwemeDetail != nil {
+	if isUsefulDetail(payload.AwemeDetail) {
 		return payload.AwemeDetail
 	}
+	if isUsefulDetail(payload.NoteDetail) {
+		return payload.NoteDetail
+	}
 
-	if payload.State != nil && payload.State.VideoDetail != nil {
-		return payload.State.VideoDetail
+	if payload.State != nil {
+		if isUsefulDetail(payload.State.VideoDetail) {
+			return payload.State.VideoDetail
+		}
+		if isUsefulDetail(payload.State.NoteDetail) {
+			return payload.State.NoteDetail
+		}
 	}
 
 	for _, raw := range payload.LoaderData {
@@ -277,16 +337,114 @@ func findDetail(payload routerDataEnvelope) *awemeDetail {
 		}
 
 		switch {
-		case entry.AwemeDetail != nil:
+		case isUsefulDetail(entry.AwemeDetail):
 			return entry.AwemeDetail
-		case entry.Detail != nil:
+		case isUsefulDetail(entry.NoteDetail):
+			return entry.NoteDetail
+		case isUsefulDetail(entry.Detail):
 			return entry.Detail
 		case entry.VideoInfoRes != nil && len(entry.VideoInfoRes.ItemList) > 0:
 			return &entry.VideoInfoRes.ItemList[0]
+		case entry.NoteInfoRes != nil && len(entry.NoteInfoRes.ItemList) > 0:
+			return &entry.NoteInfoRes.ItemList[0]
 		}
 	}
 
 	return nil
+}
+
+func findDetailInRawJSON(raw []byte) *awemeDetail {
+	var value any
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return nil
+	}
+
+	return findDetailInValue(value, 0)
+}
+
+func findDetailInValue(value any, depth int) *awemeDetail {
+	if value == nil || depth > 12 {
+		return nil
+	}
+
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range []string{"awemeDetail", "noteDetail", "videoDetail", "detail"} {
+			if detail := detailFromValue(typed[key]); detail != nil {
+				return detail
+			}
+		}
+
+		for _, key := range []string{"item_list", "items"} {
+			if detail := findDetailInValue(typed[key], depth+1); detail != nil {
+				return detail
+			}
+		}
+
+		if detail := detailFromValue(typed); detail != nil {
+			return detail
+		}
+
+		for _, child := range typed {
+			if detail := findDetailInValue(child, depth+1); detail != nil {
+				return detail
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if detail := findDetailInValue(child, depth+1); detail != nil {
+				return detail
+			}
+		}
+	}
+
+	return nil
+}
+
+func detailFromValue(value any) *awemeDetail {
+	if value == nil {
+		return nil
+	}
+
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+
+	var detail awemeDetail
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		return nil
+	}
+
+	if isUsefulDetail(&detail) {
+		return &detail
+	}
+
+	return nil
+}
+
+func isUsefulDetail(detail *awemeDetail) bool {
+	if detail == nil {
+		return false
+	}
+
+	if strings.TrimSpace(detail.AwemeID) != "" {
+		return true
+	}
+	if len(detail.Images) > 0 || len(detail.ImagePost.Images) > 0 {
+		return true
+	}
+	if firstNonEmptyURL(addressURLs(detail.Video.PlayAddr), addressURLs(detail.Video.DownloadAddr), addressURLs(detail.Image), addressURLs(detail.Cover), addressURLs(detail.Thumb)) != "" {
+		return true
+	}
+
+	return false
+}
+
+func hasNoteImages(detail *awemeDetail) bool {
+	return detail != nil && (len(detail.Images) > 0 || len(detail.ImagePost.Images) > 0)
 }
 
 func extractRouterJSON(htmlContent string) ([]byte, error) {
@@ -364,16 +522,24 @@ func extractAssignedJSONObject(content, marker string) (string, error) {
 	return "", fmt.Errorf("marker %s JSON was not terminated", marker)
 }
 
+func extractedContentFromDetail(detail *awemeDetail, contentType string) *ExtractedVideo {
+	if contentType == "note" {
+		return extractedNoteFromDetail(detail)
+	}
+
+	return extractedVideoFromDetail(detail)
+}
+
 func extractedVideoFromDetail(detail *awemeDetail) *ExtractedVideo {
 	videoData := detail.Video
 	candidateURL := firstNonEmptyURL(
-		videoData.DownloadAddr.URLList,
-		videoData.PlayAddrH264.URLList,
-		videoData.PlayAddrLowbr.URLList,
-		videoData.PlayAddr.URLList,
+		addressURLs(videoData.DownloadAddr),
+		addressURLs(videoData.PlayAddrH264),
+		addressURLs(videoData.PlayAddrLowbr),
+		addressURLs(videoData.PlayAddr),
 	)
 
-	watermarkURL := firstURL(videoData.PlayAddr.URLList)
+	watermarkURL := firstURL(addressURLs(videoData.PlayAddr))
 	downloadURL := normalizeVideoURL(candidateURL)
 	if downloadURL == "" {
 		downloadURL = normalizeVideoURL(watermarkURL)
@@ -386,15 +552,15 @@ func extractedVideoFromDetail(detail *awemeDetail) *ExtractedVideo {
 
 	return &ExtractedVideo{
 		VideoID:           detail.AwemeID,
-		Title:             cleanText(detail.Desc),
-		Description:       cleanText(detail.Desc),
+		Title:             cleanText(firstNonEmpty(detail.Desc, detail.Title)),
+		Description:       cleanText(firstNonEmpty(detail.Desc, detail.Title)),
 		Author:            cleanText(detail.Author.Nickname),
 		AuthorID:          resolveAuthorID(detail.Author),
 		VideoURI:          firstNonEmpty(videoData.DownloadAddr.URI, videoData.PlayAddr.URI, videoData.PlayAddrH264.URI, videoData.PlayAddrLowbr.URI),
 		VideoURL:          downloadURL,
 		VideoDownloadURL:  downloadURL,
 		WatermarkVideoURL: watermarkURL,
-		CoverURL:          firstURL(videoData.Cover.URLList),
+		CoverURL:          firstNonEmptyURL(addressURLs(videoData.Cover), addressURLs(detail.Cover), addressURLs(detail.Image), addressURLs(detail.Thumb)),
 		VideoWidth:        videoData.Width,
 		VideoHeight:       videoData.Height,
 		Duration:          durationSeconds,
@@ -406,6 +572,145 @@ func extractedVideoFromDetail(detail *awemeDetail) *ExtractedVideo {
 		CollectCount:      detail.Statistics.CollectCount,
 		ContentType:       "video",
 	}
+}
+
+func extractedNoteFromDetail(detail *awemeDetail) *ExtractedVideo {
+	imageURLs := imageURLsFromDetail(detail)
+	width, height := firstImageDimensions(detail)
+
+	return &ExtractedVideo{
+		VideoID:      detail.AwemeID,
+		Title:        cleanText(firstNonEmpty(detail.Desc, detail.Title)),
+		Description:  cleanText(firstNonEmpty(detail.Desc, detail.Title)),
+		Author:       cleanText(detail.Author.Nickname),
+		AuthorID:     resolveAuthorID(detail.Author),
+		CoverURL:     firstNonEmpty(firstURL(imageURLs), firstNonEmptyURL(addressURLs(detail.Cover), addressURLs(detail.Image), addressURLs(detail.Thumb))),
+		VideoWidth:   width,
+		VideoHeight:  height,
+		Duration:     0,
+		CreateTime:   detail.CreateTime,
+		LikeCount:    detail.Statistics.DiggCount,
+		CommentCount: detail.Statistics.CommentCount,
+		ShareCount:   detail.Statistics.ShareCount,
+		PlayCount:    detail.Statistics.PlayCount,
+		CollectCount: detail.Statistics.CollectCount,
+		ContentType:  "note",
+		ImageURLs:    imageURLs,
+		ImageCount:   len(imageURLs),
+	}
+}
+
+func imageURLsFromDetail(detail *awemeDetail) []string {
+	if detail == nil {
+		return nil
+	}
+
+	imageURLs := make([]string, 0, len(detail.Images)+len(detail.ImagePost.Images))
+	seen := make(map[string]bool)
+
+	add := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" || seen[raw] {
+			return
+		}
+		seen[raw] = true
+		imageURLs = append(imageURLs, raw)
+	}
+
+	addImages := func(images []imageInfo) {
+		for _, image := range images {
+			add(imageURL(image))
+		}
+	}
+
+	addImages(detail.Images)
+	addImages(detail.ImagePost.Images)
+
+	if len(imageURLs) == 0 {
+		for _, address := range []addressInfo{detail.Image, detail.Cover, detail.Thumb, detail.Video.Cover} {
+			add(firstURL(addressURLs(address)))
+		}
+	}
+
+	return imageURLs
+}
+
+func imageURL(image imageInfo) string {
+	groups := [][]string{
+		addressURLs(image.OriginImage),
+		image.DownloadURLList,
+		addressURLs(image.DisplayImage),
+		addressURLs(image.Image),
+		[]string{image.URL},
+		image.URLList,
+		addressURLs(image.Cover),
+		addressURLs(image.Thumbnail),
+		addressURLs(image.Thumb),
+		addressURLs(image.OwnerWatermarkImage),
+		addressURLs(image.UserWatermarkImage),
+	}
+
+	fallback := ""
+	for _, group := range groups {
+		for _, raw := range group {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
+			}
+			if fallback == "" {
+				fallback = raw
+			}
+			if !looksWatermarkedImageURL(raw) {
+				return raw
+			}
+		}
+	}
+
+	return fallback
+}
+
+func looksWatermarkedImageURL(raw string) bool {
+	raw = strings.ToLower(raw)
+	watermarkMarkers := []string{
+		"new-water",
+		"watermark",
+		"water:",
+		"owner_watermark",
+		"user_watermark",
+	}
+
+	for _, marker := range watermarkMarkers {
+		if strings.Contains(raw, marker) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func firstImageDimensions(detail *awemeDetail) (int64, int64) {
+	if detail == nil {
+		return 0, 0
+	}
+
+	for _, images := range [][]imageInfo{detail.Images, detail.ImagePost.Images} {
+		for _, image := range images {
+			if image.Width > 0 || image.Height > 0 {
+				return image.Width, image.Height
+			}
+		}
+	}
+
+	return 0, 0
+}
+
+func addressURLs(address addressInfo) []string {
+	urls := make([]string, 0, len(address.URLList)+1)
+	if strings.TrimSpace(address.URL) != "" {
+		urls = append(urls, address.URL)
+	}
+	urls = append(urls, address.URLList...)
+	return urls
 }
 
 func resolveAuthorID(author authorInfo) string {

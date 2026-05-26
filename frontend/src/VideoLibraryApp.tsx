@@ -1,4 +1,17 @@
-import { ChevronLeft, ChevronRight, Download, LoaderCircle, LogOut, Play, Plus, Star, Tag, Trash2, X } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  Images,
+  LoaderCircle,
+  LogOut,
+  Play,
+  Plus,
+  Star,
+  Tag,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useEffect, useMemo, useState, type CSSProperties, type ChangeEvent } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -46,10 +59,22 @@ type VideoRecord = {
   localFile: string;
   localUrl: string;
   fileSize: number;
+  mediaImages: MediaImageRecord[];
   savedAt: string;
   updatedAt: string;
   lastSourceInput: string;
   tags: TagRecord[];
+};
+
+type MediaImageRecord = {
+  index: number;
+  sourceUrl: string;
+  localFile: string;
+  localUrl: string;
+  width: number;
+  height: number;
+  fileSize: number;
+  contentType: string;
 };
 
 type ListResponse = {
@@ -148,10 +173,12 @@ export default function VideoLibraryApp() {
 
   const stats = useMemo(() => {
     const rated = videos.filter((video) => video.rating > 0).length;
+    const notes = videos.filter((video) => isNote(video)).length;
     const totalDurationSeconds = videos.reduce((sum, video) => sum + video.duration, 0);
     return {
       total: videos.length,
       rated,
+      notes,
       totalDurationMinutes: Math.round((totalDurationSeconds / 60) * 10) / 10,
     };
   }, [videos]);
@@ -251,7 +278,7 @@ export default function VideoLibraryApp() {
         current ? data.videos.find((video) => video.videoId === current.videoId) ?? current : null,
       );
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "加载视频列表失败");
+      setError(loadError instanceof Error ? loadError.message : "加载素材列表失败");
     } finally {
       setLoading(false);
     }
@@ -276,7 +303,11 @@ export default function VideoLibraryApp() {
         body: JSON.stringify({ shareText }),
       });
 
-      setMessage(payload.alreadyStored ? "该视频已存在，本次直接复用本地文件。" : "视频已解析并保存到本地。");
+      setMessage(
+        payload.alreadyStored
+          ? `该${getContentTypeName(payload.video)}已存在，本次直接复用本地文件。`
+          : `${getContentTypeName(payload.video)}已解析并保存到本地。`,
+      );
       setShareText("");
       await Promise.all([loadVideos(ratingFilter, selectedTagIds), loadTags()]);
       setSelectedVideo(payload.video);
@@ -364,7 +395,7 @@ export default function VideoLibraryApp() {
   }
 
   async function handleDeleteTag(tag: TagRecord) {
-    const confirmed = window.confirm(`确认删除标签“${tag.name}”吗？这会移除所有视频上的该标签。`);
+    const confirmed = window.confirm(`确认删除标签“${tag.name}”吗？这会移除所有素材上的该标签。`);
     if (!confirmed) {
       return;
     }
@@ -413,7 +444,7 @@ export default function VideoLibraryApp() {
         method: "DELETE",
       });
 
-      setMessage("视频文件和本地记录已删除。");
+      setMessage(`${getContentTypeName(video)}文件和本地记录已删除。`);
       setSelectedVideo((current) => (current?.videoId === video.videoId ? null : current));
       await Promise.all([loadVideos(ratingFilter, selectedTagIds), loadTags()]);
     } catch (deleteError) {
@@ -488,7 +519,7 @@ export default function VideoLibraryApp() {
 
           <div className="grid gap-6 pb-10 pt-10 lg:grid-cols-[minmax(0,1.2fr)_330px] lg:items-end lg:pb-14 lg:pt-20">
             <div className="max-w-4xl space-y-6">
-              <h1 className="runway-title text-[44px] font-semibold text-white sm:text-[60px]">抖音视频库</h1>
+              <h1 className="runway-title text-[44px] font-semibold text-white sm:text-[60px]">抖音素材库</h1>
 
               {featuredVideo ? (
                 <div className="runway-panel rounded-[24px] p-5 sm:p-6">
@@ -500,7 +531,7 @@ export default function VideoLibraryApp() {
                       </div>
                       <div className="flex flex-wrap gap-4 text-sm text-[#a7a7a7]">
                         <span>{featuredVideo.author || "未知作者"}</span>
-                        <span>{formatDuration(featuredVideo.duration)}</span>
+                        <span>{getContentMeta(featuredVideo)}</span>
                         <span>{formatDate(featuredVideo.savedAt)}</span>
                       </div>
                     </div>
@@ -510,14 +541,14 @@ export default function VideoLibraryApp() {
                       className="h-11 rounded-full border-white bg-white px-5 text-black hover:bg-[#eceff4]"
                       onClick={() => setSelectedVideo(featuredVideo)}
                     >
-                      <Play className="mr-2 h-4 w-4 fill-current" />
-                      打开视频
+                      {isNote(featuredVideo) ? <Images className="mr-2 h-4 w-4" /> : <Play className="mr-2 h-4 w-4 fill-current" />}
+                      打开素材
                     </Button>
                   </div>
                 </div>
               ) : (
                 <div className="runway-panel rounded-[24px] p-5 text-sm text-[#a7a7a7]">
-                  还没有已保存视频。先在下方粘贴分享文案，保存第一条素材后这里会自动展示当前焦点。
+                  还没有已保存素材。先在下方粘贴分享文案，保存第一条素材后这里会自动展示当前焦点。
                 </div>
               )}
             </div>
@@ -527,7 +558,7 @@ export default function VideoLibraryApp() {
               <div className="mt-6 grid gap-5">
                 <StatCard label="当前结果" value={String(stats.total)} />
                 <StatCard label="已评分" value={String(stats.rated)} />
-                <StatCard label="总时长" value={`${stats.totalDurationMinutes} 分钟`} />
+                <StatCard label="图集" value={String(stats.notes)} />
               </div>
             </aside>
           </div>
@@ -540,9 +571,9 @@ export default function VideoLibraryApp() {
             <CardHeader className="gap-3">
               <div className="runway-label">Ingest</div>
               <div className="space-y-2">
-                <CardTitle className="text-[28px] font-semibold tracking-[-0.04em] text-white">获取视频</CardTitle>
+                <CardTitle className="text-[28px] font-semibold tracking-[-0.04em] text-white">获取素材</CardTitle>
                 <CardDescription className="max-w-2xl text-[15px] leading-7 text-[#a7a7a7]">
-                  粘贴整段分享文案即可，后端会自动提取抖音短链并下载本地文件。
+                  粘贴整段分享文案即可，后端会自动提取抖音短链并下载视频或图集到本地。
                 </CardDescription>
               </div>
             </CardHeader>
@@ -570,9 +601,9 @@ export default function VideoLibraryApp() {
                   disabled={submitting}
                 >
                   {submitting ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
-                  获取视频并保存到本地
+                  获取素材并保存到本地
                 </Button>
-                <div className="text-sm text-[#7d848e]">支持整段分享文案，后端会自动解析短链。</div>
+                <div className="text-sm text-[#7d848e]">支持视频和图集分享文案，后端会自动解析短链。</div>
               </div>
 
               {message ? (
@@ -595,7 +626,7 @@ export default function VideoLibraryApp() {
               <div className="space-y-2">
                 <CardTitle className="text-[24px] font-semibold tracking-[-0.04em] text-white">标签管理</CardTitle>
                 <CardDescription className="text-[15px] leading-7 text-[#a7a7a7]">
-                  创建常用标签，用于后续筛选和在视频详情里进行多选绑定。
+                  创建常用标签，用于后续筛选和在素材详情里进行多选绑定。
                 </CardDescription>
               </div>
             </CardHeader>
@@ -656,11 +687,11 @@ export default function VideoLibraryApp() {
 
               {tags.length === 0 ? (
                 <div className="rounded-2xl border border-[#27272a] bg-[#0a0a0a] px-4 py-3 text-sm leading-6 text-[#a7a7a7]">
-                  还没有标签。先创建几个常用标签，后面可以在视频详情里多选绑定。
+                  还没有标签。先创建几个常用标签，后面可以在素材详情里多选绑定。
                 </div>
               ) : (
                 <div className="text-sm leading-6 text-[#7d848e]">
-                  点击标签名称可加入筛选；点击右侧关闭按钮会删除该标签及其在所有视频上的绑定关系。
+                  点击标签名称可加入筛选；点击右侧关闭按钮会删除该标签及其在所有素材上的绑定关系。
                 </div>
               )}
             </CardContent>
@@ -671,7 +702,7 @@ export default function VideoLibraryApp() {
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div className="space-y-2">
               <div className="runway-label">Archive</div>
-              <h2 className="text-[32px] font-semibold tracking-[-0.05em] text-white">已保存的视频</h2>
+              <h2 className="text-[32px] font-semibold tracking-[-0.05em] text-white">已保存的素材</h2>
             </div>
 
             <Button
@@ -771,6 +802,7 @@ export default function VideoLibraryApp() {
                       <div className="absolute inset-0 flex flex-col justify-between p-4 sm:p-5">
                         <div className="flex flex-wrap items-center gap-2">
                           <Badge className="border border-white/12 bg-black/36 text-white">{video.author || "未署名作者"}</Badge>
+                          <Badge className="border border-white/12 bg-black/30 text-[#d8dde5]">{getContentTypeName(video)}</Badge>
                           {video.rating > 0 ? (
                             <Badge className="border border-white/12 bg-white/12 text-white">评分 {video.rating}/5</Badge>
                           ) : (
@@ -801,7 +833,7 @@ export default function VideoLibraryApp() {
                           </h3>
 
                           <div className="flex items-center justify-between gap-3 text-xs text-[#b0b3b8]">
-                            <span>{formatDuration(video.duration)}</span>
+                            <span>{getContentMeta(video)}</span>
                             <span>{formatDate(video.savedAt)}</span>
                           </div>
                         </div>
@@ -815,10 +847,10 @@ export default function VideoLibraryApp() {
             {!loading && videos.length === 0 ? (
               <Card className="col-span-full rounded-[24px] border-[#27272a] bg-[#050505] shadow-none">
                 <CardContent className="flex min-h-72 flex-col items-center justify-center py-10 text-center">
-                  <Play className="h-10 w-10 text-[#6f7680]" />
-                  <h3 className="mt-4 text-base font-semibold text-white">当前筛选下没有视频</h3>
+                  <Images className="h-10 w-10 text-[#6f7680]" />
+                  <h3 className="mt-4 text-base font-semibold text-white">当前筛选下没有素材</h3>
                   <p className="mt-2 max-w-md text-sm leading-6 text-[#a7a7a7]">
-                    你可以先在上方保存一个抖音视频，或者调整评分与标签筛选条件查看其他内容。
+                    你可以先在上方保存一个抖音视频或图集，或者调整评分与标签筛选条件查看其他内容。
                   </p>
                 </CardContent>
               </Card>
@@ -843,7 +875,7 @@ export default function VideoLibraryApp() {
                       {selectedVideoIndex >= 0
                         ? `第 ${selectedVideoIndex + 1} 个，共 ${videos.length} 个`
                         : videos.length > 0
-                          ? "当前视频不在当前筛选结果中，无法切换。"
+                          ? "当前素材不在当前筛选结果中，无法切换。"
                           : "当前筛选结果为空。"}
                     </div>
                   </div>
@@ -872,18 +904,7 @@ export default function VideoLibraryApp() {
                   </div>
                 </div>
 
-                <div className="overflow-hidden rounded-[24px] border border-[#27272a] bg-black p-2">
-                  <video
-                    key={selectedVideo.videoId}
-                    src={selectedVideo.localUrl}
-                    poster={selectedVideo.coverUrl}
-                    autoPlay
-                    controls
-                    loop
-                    playsInline
-                    className="mx-auto block max-h-[70vh] w-auto max-w-full bg-black"
-                  />
-                </div>
+                {isNote(selectedVideo) ? <GalleryViewer video={selectedVideo} /> : <VideoPlayer video={selectedVideo} />}
 
                 <div className="space-y-4">
                   <div className="runway-label">Title</div>
@@ -892,8 +913,8 @@ export default function VideoLibraryApp() {
                   </h2>
 
                   <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                    <Metric label="时长" value={formatDuration(selectedVideo.duration)} />
-                    <Metric label="尺寸" value={formatVideoResolution(selectedVideo.videoWidth, selectedVideo.videoHeight)} />
+                    <Metric label={isNote(selectedVideo) ? "图片" : "时长"} value={getPrimaryMetric(selectedVideo)} />
+                    <Metric label="尺寸" value={formatResolution(selectedVideo.videoWidth, selectedVideo.videoHeight)} />
                     <Metric label="点赞" value={formatCompactNumber(selectedVideo.likeCount)} />
                     <Metric label="评论" value={formatCompactNumber(selectedVideo.commentCount)} />
                   </div>
@@ -940,7 +961,7 @@ export default function VideoLibraryApp() {
                   <Card className="runway-surface rounded-[22px] border-[#27272a] bg-[#0a0a0a] shadow-none">
                     <CardHeader className="pb-4">
                       <CardTitle className="text-sm text-white">标签</CardTitle>
-                      <CardDescription className="text-sm text-[#7d848e]">可为当前视频绑定多个标签。</CardDescription>
+                      <CardDescription className="text-sm text-[#7d848e]">可为当前素材绑定多个标签。</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
                       {tags.length > 0 ? (
@@ -968,7 +989,7 @@ export default function VideoLibraryApp() {
                           })}
                         </div>
                       ) : (
-                        <div className="text-sm text-[#a7a7a7]">还没有标签，先在上方创建后再给视频绑定。</div>
+                        <div className="text-sm text-[#a7a7a7]">还没有标签，先在上方创建后再给素材绑定。</div>
                       )}
 
                       <div className="rounded-2xl border border-[#27272a] bg-[#080808] px-4 py-3 text-sm leading-6 text-[#a7a7a7]">
@@ -987,10 +1008,11 @@ export default function VideoLibraryApp() {
                     <CardContent className="space-y-3 text-sm text-[#a7a7a7]">
                       <InfoRow label="作者昵称" value={selectedVideo.author} />
                       <InfoRow label="抖音号" value={selectedVideo.authorId || "未获取"} />
+                      <InfoRow label="内容类型" value={getContentTypeName(selectedVideo)} />
                       <InfoRow label="封面来源" value={selectedVideo.coverSourceUrl || selectedVideo.coverUrl} />
                       <InfoRow label="本地封面" value={selectedVideo.coverLocalFile || "未本地化"} />
                       <InfoRow label="分享短链" value={selectedVideo.shareUrl} />
-                      <InfoRow label="下载地址" value={selectedVideo.downloadUrl} />
+                      <InfoRow label={isNote(selectedVideo) ? "图片来源" : "下载地址"} value={getSourceSummary(selectedVideo)} />
                       <InfoRow label="原始分享页" value={selectedVideo.originalUrl} />
                       <InfoRow label="本地大小" value={formatFileSize(selectedVideo.fileSize)} />
                     </CardContent>
@@ -1009,9 +1031,9 @@ export default function VideoLibraryApp() {
 
                   <Card className="runway-surface rounded-[22px] border-[#4b1f24] bg-[#120608] shadow-none">
                     <CardHeader className="pb-4">
-                      <CardTitle className="text-sm text-white">删除视频</CardTitle>
+                      <CardTitle className="text-sm text-white">删除素材</CardTitle>
                       <CardDescription className="text-sm text-rose-200/75">
-                        会同时删除本地 MP4 文件、封面文件和 SQLite 里的元数据记录。
+                        会同时删除本地媒体文件、封面文件和 SQLite 里的元数据记录。
                       </CardDescription>
                     </CardHeader>
                     <CardContent>
@@ -1058,6 +1080,148 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
+function VideoPlayer({ video }: { video: VideoRecord }) {
+  return (
+    <div className="overflow-hidden rounded-[24px] border border-[#27272a] bg-black p-2">
+      <video
+        key={video.videoId}
+        src={video.localUrl}
+        poster={video.coverUrl}
+        autoPlay
+        controls
+        loop
+        playsInline
+        className="mx-auto block max-h-[70vh] w-auto max-w-full bg-black"
+      />
+    </div>
+  );
+}
+
+function GalleryViewer({ video }: { video: VideoRecord }) {
+  const images = video.mediaImages.length > 0 ? video.mediaImages : fallbackGalleryImages(video);
+
+  function downloadAllImages() {
+    images.forEach((image, index) => {
+      const imageURL = getGalleryImageURL(image);
+      if (!imageURL) {
+        return;
+      }
+
+      window.setTimeout(() => {
+        const link = document.createElement("a");
+        link.href = imageURL;
+        link.download = getGalleryImageDownloadName(video, image, index);
+        link.rel = "noreferrer";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }, index * 120);
+    });
+  }
+
+  return (
+    <div className="overflow-hidden rounded-[24px] border border-[#27272a] bg-black">
+      {images.length > 0 ? (
+        <>
+          <div className="flex items-center justify-between border-b border-[#27272a] px-3 py-3">
+            <div className="runway-label">{images.length} 张图片</div>
+            <Button
+              variant="secondary"
+              size="sm"
+              className="h-9 rounded-full border-[#27272a] bg-[#080808] px-4 text-white hover:bg-[#121212]"
+              onClick={downloadAllImages}
+            >
+              <Download className="mr-1.5 h-3.5 w-3.5" />
+              下载全部
+            </Button>
+          </div>
+
+          <div className="grid max-h-[76vh] gap-2 overflow-y-auto p-2 sm:grid-cols-2">
+            {images.map((image, index) => {
+              const imageURL = getGalleryImageURL(image);
+              return (
+                <figure
+                  key={`${image.localUrl || image.sourceUrl}-${index}`}
+                  className="group relative overflow-hidden rounded-[18px] bg-[#080808]"
+                >
+                  <img
+                    src={imageURL}
+                    alt={`${getDisplayTitle(video)} ${index + 1}`}
+                    loading={index > 1 ? "lazy" : "eager"}
+                    className="h-full max-h-[70vh] w-full object-contain"
+                  />
+                  {imageURL ? (
+                    <a
+                      href={imageURL}
+                      download={getGalleryImageDownloadName(video, image, index)}
+                      rel="noreferrer"
+                      className="absolute right-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-black/72 text-white opacity-100 shadow-[0_12px_30px_rgba(0,0,0,0.35)] backdrop-blur transition hover:bg-white hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/45 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+                      aria-label={`下载第 ${index + 1} 张图片`}
+                      title={`下载第 ${index + 1} 张图片`}
+                    >
+                      <Download className="h-4 w-4" />
+                    </a>
+                  ) : null}
+                </figure>
+              );
+            })}
+          </div>
+        </>
+      ) : (
+        <div className="flex min-h-[360px] items-center justify-center p-8 text-sm text-[#a7a7a7]">
+          当前图集没有可展示的本地图片。
+        </div>
+      )}
+    </div>
+  );
+}
+
+function getGalleryImageURL(image: MediaImageRecord) {
+  return image.localUrl || image.sourceUrl;
+}
+
+function getGalleryImageDownloadName(video: VideoRecord, image: MediaImageRecord, index: number) {
+  const extension = imageExtensionFromURL(getGalleryImageURL(image), image.contentType);
+  return `${video.videoId || video.id || "douyin-gallery"}-${String(index + 1).padStart(3, "0")}${extension}`;
+}
+
+function imageExtensionFromURL(rawURL: string, contentType: string) {
+  const contentTypeExtension = imageExtensionFromContentType(contentType);
+  if (contentTypeExtension) {
+    return contentTypeExtension;
+  }
+
+  try {
+    const parsed = new URL(rawURL, window.location.origin);
+    const extension = parsed.pathname.match(/\.(avif|gif|jpe?g|png|webp)$/i)?.[0];
+    if (extension) {
+      return extension.toLowerCase() === ".jpeg" ? ".jpg" : extension.toLowerCase();
+    }
+  } catch {
+    return ".jpg";
+  }
+
+  return ".jpg";
+}
+
+function imageExtensionFromContentType(contentType: string) {
+  switch (contentType.toLowerCase()) {
+    case "image/avif":
+      return ".avif";
+    case "image/gif":
+      return ".gif";
+    case "image/jpeg":
+    case "image/jpg":
+      return ".jpg";
+    case "image/png":
+      return ".png";
+    case "image/webp":
+      return ".webp";
+    default:
+      return "";
+  }
+}
+
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="space-y-2">
@@ -1070,7 +1234,59 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 }
 
 function getDisplayTitle(video: VideoRecord) {
-  return video.title || video.description || "未命名视频";
+  return video.title || video.description || "未命名素材";
+}
+
+function isNote(video: VideoRecord) {
+  return video.contentType === "note";
+}
+
+function getContentTypeName(video: VideoRecord) {
+  return isNote(video) ? "图集" : "视频";
+}
+
+function getContentMeta(video: VideoRecord) {
+  if (isNote(video)) {
+    return `${video.mediaImages.length} 张`;
+  }
+
+  return formatDuration(video.duration);
+}
+
+function getPrimaryMetric(video: VideoRecord) {
+  if (isNote(video)) {
+    return `${video.mediaImages.length} 张`;
+  }
+
+  return formatDuration(video.duration);
+}
+
+function getSourceSummary(video: VideoRecord) {
+  if (!isNote(video)) {
+    return video.downloadUrl;
+  }
+
+  const sourceURLs = video.mediaImages.map((image) => image.sourceUrl).filter(Boolean);
+  return sourceURLs.length > 0 ? sourceURLs.join("\n") : "未获取";
+}
+
+function fallbackGalleryImages(video: VideoRecord): MediaImageRecord[] {
+  if (!video.coverUrl) {
+    return [];
+  }
+
+  return [
+    {
+      index: 0,
+      sourceUrl: video.coverSourceUrl || video.coverUrl,
+      localFile: video.coverLocalFile,
+      localUrl: video.coverUrl,
+      width: video.videoWidth,
+      height: video.videoHeight,
+      fileSize: 0,
+      contentType: "",
+    },
+  ];
 }
 
 function formatDate(value: string) {
@@ -1114,7 +1330,7 @@ function formatFileSize(bytes: number) {
   return `${value.toFixed(value >= 100 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
-function formatVideoResolution(width: number, height: number) {
+function formatResolution(width: number, height: number) {
   if (width > 0 && height > 0) {
     return `${width} × ${height}`;
   }

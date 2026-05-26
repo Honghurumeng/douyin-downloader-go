@@ -34,6 +34,7 @@ const (
 	legacyJSONPath = "data/videos.json"
 	videoDataDir   = "data/videos"
 	coverDataDir   = "data/covers"
+	imageDataDir   = "data/images"
 	frontendDist   = "frontend/dist"
 	maxShareBytes  = 8 * 1024
 	sessionMaxAge  = 7 * 24 * time.Hour
@@ -108,7 +109,7 @@ func main() {
 		log.Fatalf("generate session secret: %v", err)
 	}
 
-	for _, dir := range []string{videoDataDir, coverDataDir} {
+	for _, dir := range []string{videoDataDir, coverDataDir, imageDataDir} {
 		if err := os.MkdirAll(filepath.Join(rootDir, dir), 0o755); err != nil {
 			log.Fatalf("create data directory %s: %v", dir, err)
 		}
@@ -158,6 +159,12 @@ func main() {
 		app.routePath("/covers/"),
 		app.requireAuthentication(
 			http.StripPrefix(app.routePath("/covers/"), http.FileServer(http.Dir(filepath.Join(rootDir, coverDataDir)))),
+		),
+	)
+	mux.Handle(
+		app.routePath("/images/"),
+		app.requireAuthentication(
+			http.StripPrefix(app.routePath("/images/"), http.FileServer(http.Dir(filepath.Join(rootDir, imageDataDir)))),
 		),
 	)
 	mux.Handle(app.routePath("/assets/"), http.StripPrefix(app.baseHref(), app.frontendHandler))
@@ -442,10 +449,12 @@ func (app *application) handleDeleteVideo(w http.ResponseWriter, _ *http.Request
 		return
 	}
 
-	absoluteFile := filepath.Join(app.rootDir, filepath.FromSlash(record.LocalFile))
-	if err := os.Remove(absoluteFile); err != nil && !errors.Is(err, os.ErrNotExist) {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("delete local video file: %v", err)})
-		return
+	if record.LocalFile != "" {
+		absoluteFile := filepath.Join(app.rootDir, filepath.FromSlash(record.LocalFile))
+		if err := os.Remove(absoluteFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("delete local media file: %v", err)})
+			return
+		}
 	}
 
 	if record.CoverLocalFile != "" {
@@ -454,6 +463,21 @@ func (app *application) handleDeleteVideo(w http.ResponseWriter, _ *http.Request
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("delete local cover file: %v", err)})
 			return
 		}
+	}
+
+	for _, image := range record.MediaImages {
+		if image.LocalFile == "" {
+			continue
+		}
+
+		absoluteImageFile := filepath.Join(app.rootDir, filepath.FromSlash(image.LocalFile))
+		if err := os.Remove(absoluteImageFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("delete local image file: %v", err)})
+			return
+		}
+	}
+	if len(record.MediaImages) > 0 {
+		_ = os.Remove(filepath.Join(app.rootDir, imageDataDir, record.VideoID))
 	}
 
 	if err := app.store.Delete(videoID); errors.Is(err, os.ErrNotExist) {
@@ -493,13 +517,18 @@ func (app *application) handleDownloadVideo(w http.ResponseWriter, r *http.Reque
 	}
 
 	if existing, err := app.store.Get(extracted.VideoID); err == nil {
-		if _, err := os.Stat(filepath.Join(app.rootDir, existing.LocalFile)); err == nil {
+		if app.recordLocalMediaExists(existing) {
 			existing = mergeRecordWithExtractedMetadata(existing, extracted, shareText)
 
 			if updated, updateErr := app.backfillLocalCover(ctx, existing, extracted.CoverURL); updateErr == nil {
 				existing = updated
 			} else {
 				log.Printf("backfill cover for %s: %v", existing.VideoID, updateErr)
+			}
+			if updated, updateErr := app.backfillLocalImages(ctx, existing, extracted.ImageURLs); updateErr == nil {
+				existing = updated
+			} else {
+				log.Printf("backfill images for %s: %v", existing.VideoID, updateErr)
 			}
 
 			existing, err = app.store.Upsert(existing)
@@ -520,13 +549,33 @@ func (app *application) handleDownloadVideo(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	fileName := extracted.VideoID + ".mp4"
-	relativeFile := filepath.ToSlash(filepath.Join(videoDataDir, fileName))
-	absoluteFile := filepath.Join(app.rootDir, videoDataDir, fileName)
+	fileName := ""
+	relativeFile := ""
+	localURL := ""
+	var fileSize int64
+	var mediaImages []store.MediaImage
 
-	fileSize, err := downloader.DownloadToFile(ctx, extracted.VideoDownloadURL, absoluteFile)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+	switch extracted.ContentType {
+	case "video":
+		fileName = extracted.VideoID + ".mp4"
+		relativeFile = filepath.ToSlash(filepath.Join(videoDataDir, fileName))
+		absoluteFile := filepath.Join(app.rootDir, videoDataDir, fileName)
+
+		fileSize, err = downloader.DownloadToFile(ctx, extracted.VideoDownloadURL, absoluteFile)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+		localURL = app.routePath("/media/" + fileName)
+	case "note":
+		mediaImages, err = app.storeImagesLocally(ctx, extracted.VideoID, extracted.ImageURLs)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+		fileSize = totalImageFileSize(mediaImages)
+	default:
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("unsupported content type %q", extracted.ContentType)})
 		return
 	}
 
@@ -562,8 +611,9 @@ func (app *application) handleDownloadVideo(w http.ResponseWriter, r *http.Reque
 		ShareCount:      extracted.ShareCount,
 		CollectCount:    extracted.CollectCount,
 		LocalFile:       relativeFile,
-		LocalURL:        app.routePath("/media/" + fileName),
+		LocalURL:        localURL,
 		FileSize:        fileSize,
+		MediaImages:     mediaImages,
 		LastSourceInput: shareText,
 		SavedAt:         time.Now().UTC(),
 	}
@@ -895,6 +945,30 @@ func parseListFilter(rawRating string, rawTags string) (store.ListFilter, error)
 	return filter, nil
 }
 
+func (app *application) recordLocalMediaExists(record store.VideoRecord) bool {
+	switch record.ContentType {
+	case "note":
+		if len(record.MediaImages) == 0 {
+			return false
+		}
+		for _, image := range record.MediaImages {
+			if image.LocalFile == "" {
+				return false
+			}
+			if _, err := os.Stat(filepath.Join(app.rootDir, filepath.FromSlash(image.LocalFile))); err != nil {
+				return false
+			}
+		}
+		return true
+	default:
+		if record.LocalFile == "" {
+			return false
+		}
+		_, err := os.Stat(filepath.Join(app.rootDir, filepath.FromSlash(record.LocalFile)))
+		return err == nil
+	}
+}
+
 func (app *application) backfillLocalCover(ctx context.Context, record store.VideoRecord, freshSourceURL string) (store.VideoRecord, error) {
 	record.CoverSourceURL = firstNonEmpty(freshSourceURL, record.CoverSourceURL, record.CoverURL)
 	if record.CoverSourceURL == "" {
@@ -917,6 +991,41 @@ func (app *application) backfillLocalCover(ctx context.Context, record store.Vid
 	record.CoverLocalFile = coverLocalFile
 	record.CoverLocalURL = coverLocalURL
 	record.CoverURL = firstNonEmpty(coverLocalURL, coverSourceURL, record.CoverURL)
+
+	return app.store.Upsert(record)
+}
+
+func (app *application) backfillLocalImages(ctx context.Context, record store.VideoRecord, freshImageURLs []string) (store.VideoRecord, error) {
+	if record.ContentType != "note" {
+		return record, nil
+	}
+
+	if len(record.MediaImages) > 0 && app.recordLocalMediaExists(record) {
+		return record, nil
+	}
+
+	imageURLs := freshImageURLs
+	if len(imageURLs) == 0 {
+		for _, image := range record.MediaImages {
+			if image.SourceURL != "" {
+				imageURLs = append(imageURLs, image.SourceURL)
+			}
+		}
+	}
+	if len(imageURLs) == 0 {
+		return record, nil
+	}
+
+	mediaImages, err := app.storeImagesLocally(ctx, record.VideoID, imageURLs)
+	if err != nil {
+		return record, err
+	}
+
+	record.MediaImages = mediaImages
+	record.FileSize = totalImageFileSize(mediaImages)
+	if len(mediaImages) > 0 {
+		record.CoverURL = firstNonEmpty(record.CoverURL, mediaImages[0].LocalURL, mediaImages[0].SourceURL)
+	}
 
 	return app.store.Upsert(record)
 }
@@ -948,6 +1057,10 @@ func mergeRecordWithExtractedMetadata(record store.VideoRecord, extracted *downl
 	record.ShareCount = preferPositiveInt64(extracted.ShareCount, record.ShareCount)
 	record.CollectCount = preferPositiveInt64(extracted.CollectCount, record.CollectCount)
 
+	if record.ContentType == "note" && len(record.MediaImages) == 0 {
+		record.MediaImages = mediaImagesFromSourceURLs(extracted.ImageURLs)
+	}
+
 	if trimmed := strings.TrimSpace(sourceInput); trimmed != "" {
 		record.LastSourceInput = trimmed
 	}
@@ -977,6 +1090,96 @@ func (app *application) storeCoverLocally(ctx context.Context, videoID, sourceUR
 	}
 
 	return relativeFile, localURL, sourceURL, nil
+}
+
+func (app *application) storeImagesLocally(ctx context.Context, videoID string, sourceURLs []string) ([]store.MediaImage, error) {
+	sourceURLs = normalizeSourceURLs(sourceURLs)
+	if len(sourceURLs) == 0 {
+		return []store.MediaImage{}, errors.New("no image URLs to download")
+	}
+
+	images := make([]store.MediaImage, 0, len(sourceURLs))
+	for index, sourceURL := range sourceURLs {
+		extension := coverFileExtension(sourceURL)
+		fileName := fmt.Sprintf("%03d%s", index+1, extension)
+		relativeFile := filepath.ToSlash(filepath.Join(imageDataDir, videoID, fileName))
+		absoluteFile := filepath.Join(app.rootDir, imageDataDir, videoID, fileName)
+		localURL := app.routePath("/images/" + path.Join(videoID, fileName))
+
+		var fileSize int64
+		if stat, err := os.Stat(absoluteFile); err == nil {
+			fileSize = stat.Size()
+		} else {
+			written, err := downloader.DownloadToFile(ctx, sourceURL, absoluteFile)
+			if err != nil {
+				return images, fmt.Errorf("download image %d: %w", index+1, err)
+			}
+			fileSize = written
+		}
+
+		images = append(images, store.MediaImage{
+			Index:       index,
+			SourceURL:   sourceURL,
+			LocalFile:   relativeFile,
+			LocalURL:    localURL,
+			FileSize:    fileSize,
+			ContentType: imageContentType(extension),
+		})
+	}
+
+	return images, nil
+}
+
+func mediaImagesFromSourceURLs(sourceURLs []string) []store.MediaImage {
+	sourceURLs = normalizeSourceURLs(sourceURLs)
+	images := make([]store.MediaImage, 0, len(sourceURLs))
+	for index, sourceURL := range sourceURLs {
+		images = append(images, store.MediaImage{
+			Index:       index,
+			SourceURL:   sourceURL,
+			ContentType: imageContentType(coverFileExtension(sourceURL)),
+		})
+	}
+	return images
+}
+
+func normalizeSourceURLs(sourceURLs []string) []string {
+	seen := make(map[string]bool, len(sourceURLs))
+	result := make([]string, 0, len(sourceURLs))
+	for _, sourceURL := range sourceURLs {
+		sourceURL = strings.TrimSpace(sourceURL)
+		if sourceURL == "" || seen[sourceURL] {
+			continue
+		}
+		seen[sourceURL] = true
+		result = append(result, sourceURL)
+	}
+	return result
+}
+
+func totalImageFileSize(images []store.MediaImage) int64 {
+	var total int64
+	for _, image := range images {
+		total += image.FileSize
+	}
+	return total
+}
+
+func imageContentType(extension string) string {
+	switch strings.ToLower(extension) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".webp":
+		return "image/webp"
+	case ".gif":
+		return "image/gif"
+	case ".avif":
+		return "image/avif"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 func coverFileExtension(raw string) string {
@@ -1034,6 +1237,16 @@ func (app *application) presentVideo(record store.VideoRecord) store.VideoRecord
 
 	if record.CoverLocalURL != "" {
 		record.CoverURL = record.CoverLocalURL
+	}
+
+	for index := range record.MediaImages {
+		image := &record.MediaImages[index]
+		if image.LocalFile != "" {
+			image.LocalURL = app.routePath("/images/" + strings.TrimPrefix(filepath.ToSlash(strings.TrimPrefix(image.LocalFile, imageDataDir)), "/"))
+		}
+	}
+	if record.ContentType == "note" && record.CoverURL == "" && len(record.MediaImages) > 0 {
+		record.CoverURL = firstNonEmpty(record.MediaImages[0].LocalURL, record.MediaImages[0].SourceURL)
 	}
 
 	return record

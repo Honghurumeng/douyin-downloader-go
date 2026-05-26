@@ -28,37 +28,49 @@ type Tag struct {
 }
 
 type VideoRecord struct {
-	ID              string    `json:"id"`
-	VideoID         string    `json:"videoId"`
-	Title           string    `json:"title"`
-	Description     string    `json:"description"`
-	Author          string    `json:"author"`
-	AuthorID        string    `json:"authorId"`
-	ShareURL        string    `json:"shareUrl"`
-	OriginalURL     string    `json:"originalUrl"`
-	ContentType     string    `json:"contentType"`
-	CoverURL        string    `json:"coverUrl"`
-	CoverSourceURL  string    `json:"coverSourceUrl"`
-	CoverLocalFile  string    `json:"coverLocalFile"`
-	CoverLocalURL   string    `json:"coverLocalUrl"`
-	VideoURI        string    `json:"videoUri"`
-	DownloadURL     string    `json:"downloadUrl"`
-	WatermarkURL    string    `json:"watermarkUrl"`
-	VideoWidth      int64     `json:"videoWidth"`
-	VideoHeight     int64     `json:"videoHeight"`
-	Duration        float64   `json:"duration"`
-	LikeCount       int64     `json:"likeCount"`
-	CommentCount    int64     `json:"commentCount"`
-	ShareCount      int64     `json:"shareCount"`
-	CollectCount    int64     `json:"collectCount"`
-	Rating          int       `json:"rating"`
-	LocalFile       string    `json:"localFile"`
-	LocalURL        string    `json:"localUrl"`
-	FileSize        int64     `json:"fileSize"`
-	SavedAt         time.Time `json:"savedAt"`
-	UpdatedAt       time.Time `json:"updatedAt"`
-	LastSourceInput string    `json:"lastSourceInput"`
-	Tags            []Tag     `json:"tags"`
+	ID              string       `json:"id"`
+	VideoID         string       `json:"videoId"`
+	Title           string       `json:"title"`
+	Description     string       `json:"description"`
+	Author          string       `json:"author"`
+	AuthorID        string       `json:"authorId"`
+	ShareURL        string       `json:"shareUrl"`
+	OriginalURL     string       `json:"originalUrl"`
+	ContentType     string       `json:"contentType"`
+	CoverURL        string       `json:"coverUrl"`
+	CoverSourceURL  string       `json:"coverSourceUrl"`
+	CoverLocalFile  string       `json:"coverLocalFile"`
+	CoverLocalURL   string       `json:"coverLocalUrl"`
+	VideoURI        string       `json:"videoUri"`
+	DownloadURL     string       `json:"downloadUrl"`
+	WatermarkURL    string       `json:"watermarkUrl"`
+	VideoWidth      int64        `json:"videoWidth"`
+	VideoHeight     int64        `json:"videoHeight"`
+	Duration        float64      `json:"duration"`
+	LikeCount       int64        `json:"likeCount"`
+	CommentCount    int64        `json:"commentCount"`
+	ShareCount      int64        `json:"shareCount"`
+	CollectCount    int64        `json:"collectCount"`
+	Rating          int          `json:"rating"`
+	LocalFile       string       `json:"localFile"`
+	LocalURL        string       `json:"localUrl"`
+	FileSize        int64        `json:"fileSize"`
+	MediaImages     []MediaImage `json:"mediaImages"`
+	SavedAt         time.Time    `json:"savedAt"`
+	UpdatedAt       time.Time    `json:"updatedAt"`
+	LastSourceInput string       `json:"lastSourceInput"`
+	Tags            []Tag        `json:"tags"`
+}
+
+type MediaImage struct {
+	Index       int    `json:"index"`
+	SourceURL   string `json:"sourceUrl"`
+	LocalFile   string `json:"localFile"`
+	LocalURL    string `json:"localUrl"`
+	Width       int64  `json:"width"`
+	Height      int64  `json:"height"`
+	FileSize    int64  `json:"fileSize"`
+	ContentType string `json:"contentType"`
 }
 
 type ListFilter struct {
@@ -105,6 +117,7 @@ CREATE TABLE IF NOT EXISTS videos (
 	local_file TEXT NOT NULL,
 	local_url TEXT NOT NULL,
 	file_size INTEGER NOT NULL DEFAULT 0,
+	media_images TEXT NOT NULL DEFAULT '[]',
 	last_source_input TEXT NOT NULL,
 	saved_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
@@ -141,6 +154,7 @@ var requiredColumns = []struct {
 	{Name: "cover_local_url", Definition: "TEXT NOT NULL DEFAULT ''"},
 	{Name: "video_width", Definition: "INTEGER NOT NULL DEFAULT 0"},
 	{Name: "video_height", Definition: "INTEGER NOT NULL DEFAULT 0"},
+	{Name: "media_images", Definition: "TEXT NOT NULL DEFAULT '[]'"},
 }
 
 func New(dbPath, legacyJSONPath string) (*Store, error) {
@@ -251,6 +265,7 @@ SELECT
 	local_file,
 	local_url,
 	file_size,
+	media_images,
 	last_source_input,
 	saved_at,
 	updated_at
@@ -343,6 +358,7 @@ SELECT
 	local_file,
 	local_url,
 	file_size,
+	media_images,
 	last_source_input,
 	saved_at,
 	updated_at
@@ -603,11 +619,12 @@ INSERT INTO videos (
 	rating,
 	local_file,
 	local_url,
-	file_size,
-	last_source_input,
-	saved_at,
-	updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		file_size,
+		media_images,
+		last_source_input,
+		saved_at,
+		updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(video_id) DO UPDATE SET
 	title = excluded.title,
 	description = excluded.description,
@@ -631,13 +648,14 @@ ON CONFLICT(video_id) DO UPDATE SET
 	share_count = excluded.share_count,
 	collect_count = excluded.collect_count,
 	rating = excluded.rating,
-	local_file = excluded.local_file,
-	local_url = excluded.local_url,
-	file_size = excluded.file_size,
-	last_source_input = excluded.last_source_input,
-	saved_at = excluded.saved_at,
-	updated_at = excluded.updated_at
-`, record.VideoID, record.Title, record.Description, record.Author, record.AuthorID, record.ShareURL, record.OriginalURL, record.ContentType, record.CoverURL, record.CoverSourceURL, record.CoverLocalFile, record.CoverLocalURL, record.VideoURI, record.DownloadURL, record.WatermarkURL, record.VideoWidth, record.VideoHeight, record.Duration, record.LikeCount, record.CommentCount, record.ShareCount, record.CollectCount, record.Rating, record.LocalFile, record.LocalURL, record.FileSize, record.LastSourceInput, record.SavedAt.Format(time.RFC3339Nano), record.UpdatedAt.Format(time.RFC3339Nano))
+		local_file = excluded.local_file,
+		local_url = excluded.local_url,
+		file_size = excluded.file_size,
+		media_images = excluded.media_images,
+		last_source_input = excluded.last_source_input,
+		saved_at = excluded.saved_at,
+		updated_at = excluded.updated_at
+	`, record.VideoID, record.Title, record.Description, record.Author, record.AuthorID, record.ShareURL, record.OriginalURL, record.ContentType, record.CoverURL, record.CoverSourceURL, record.CoverLocalFile, record.CoverLocalURL, record.VideoURI, record.DownloadURL, record.WatermarkURL, record.VideoWidth, record.VideoHeight, record.Duration, record.LikeCount, record.CommentCount, record.ShareCount, record.CollectCount, record.Rating, record.LocalFile, record.LocalURL, record.FileSize, marshalMediaImages(record.MediaImages), record.LastSourceInput, record.SavedAt.Format(time.RFC3339Nano), record.UpdatedAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return fmt.Errorf("upsert video %s: %w", record.VideoID, err)
 	}
@@ -769,6 +787,7 @@ func scanVideoRecord(scanner rowScanner) (VideoRecord, error) {
 	var record VideoRecord
 	var savedAt string
 	var updatedAt string
+	var rawMediaImages string
 
 	err := scanner.Scan(
 		&record.VideoID,
@@ -797,6 +816,7 @@ func scanVideoRecord(scanner rowScanner) (VideoRecord, error) {
 		&record.LocalFile,
 		&record.LocalURL,
 		&record.FileSize,
+		&rawMediaImages,
 		&record.LastSourceInput,
 		&savedAt,
 		&updatedAt,
@@ -807,6 +827,9 @@ func scanVideoRecord(scanner rowScanner) (VideoRecord, error) {
 
 	record.ID = record.VideoID
 	record.Tags = []Tag{}
+	if record.MediaImages, err = unmarshalMediaImages(rawMediaImages); err != nil {
+		return VideoRecord{}, fmt.Errorf("decode media images: %w", err)
+	}
 
 	if record.SavedAt, err = time.Parse(time.RFC3339Nano, savedAt); err != nil {
 		return VideoRecord{}, fmt.Errorf("parse savedAt: %w", err)
@@ -837,9 +860,59 @@ func normalizeRecord(record VideoRecord) VideoRecord {
 	record.WatermarkURL = strings.TrimSpace(record.WatermarkURL)
 	record.LocalFile = filepath.ToSlash(strings.TrimSpace(record.LocalFile))
 	record.LocalURL = strings.TrimSpace(record.LocalURL)
+	record.MediaImages = normalizeMediaImages(record.MediaImages)
 	record.LastSourceInput = strings.TrimSpace(record.LastSourceInput)
 	record.Tags = normalizeTags(record.Tags)
 	return record
+}
+
+func marshalMediaImages(images []MediaImage) string {
+	images = normalizeMediaImages(images)
+	if len(images) == 0 {
+		return "[]"
+	}
+
+	payload, err := json.Marshal(images)
+	if err != nil {
+		return "[]"
+	}
+
+	return string(payload)
+}
+
+func unmarshalMediaImages(raw string) ([]MediaImage, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return []MediaImage{}, nil
+	}
+
+	var images []MediaImage
+	if err := json.Unmarshal([]byte(raw), &images); err != nil {
+		return nil, err
+	}
+
+	return normalizeMediaImages(images), nil
+}
+
+func normalizeMediaImages(images []MediaImage) []MediaImage {
+	if len(images) == 0 {
+		return []MediaImage{}
+	}
+
+	result := make([]MediaImage, 0, len(images))
+	for index, image := range images {
+		image.Index = index
+		image.SourceURL = strings.TrimSpace(image.SourceURL)
+		image.LocalFile = filepath.ToSlash(strings.TrimSpace(image.LocalFile))
+		image.LocalURL = strings.TrimSpace(image.LocalURL)
+		image.ContentType = strings.TrimSpace(image.ContentType)
+		if image.SourceURL == "" && image.LocalFile == "" && image.LocalURL == "" {
+			continue
+		}
+		result = append(result, image)
+	}
+
+	return result
 }
 
 func normalizeTagName(name string) string {

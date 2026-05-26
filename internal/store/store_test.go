@@ -117,6 +117,68 @@ func TestStoreTagsLifecycleAndFilters(t *testing.T) {
 	assertTagNames(t, remainingTags, []string{"素材", "舞蹈"})
 }
 
+func TestStorePersistsMediaImages(t *testing.T) {
+	root := t.TempDir()
+
+	videoStore, err := New(filepath.Join(root, "videos.db"), filepath.Join(root, "videos.json"))
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = videoStore.Close()
+	})
+
+	record := testVideoRecord("note-1", 0)
+	record.ContentType = "note"
+	record.LocalFile = ""
+	record.LocalURL = ""
+	record.MediaImages = []MediaImage{
+		{
+			Index:       99,
+			SourceURL:   " https://example.com/1.webp ",
+			LocalFile:   "data/images/note-1/001.webp",
+			LocalURL:    "/images/note-1/001.webp",
+			Width:       1080,
+			Height:      1440,
+			FileSize:    123,
+			ContentType: "image/webp",
+		},
+		{
+			Index:       99,
+			SourceURL:   "https://example.com/2.webp",
+			LocalFile:   "data/images/note-1/002.webp",
+			LocalURL:    "/images/note-1/002.webp",
+			FileSize:    456,
+			ContentType: "image/webp",
+		},
+	}
+
+	if _, err := videoStore.Upsert(record); err != nil {
+		t.Fatalf("upsert note: %v", err)
+	}
+
+	got, err := videoStore.Get("note-1")
+	if err != nil {
+		t.Fatalf("get note: %v", err)
+	}
+
+	if got.ContentType != "note" {
+		t.Fatalf("ContentType = %q, want note", got.ContentType)
+	}
+	if len(got.MediaImages) != 2 {
+		t.Fatalf("expected 2 media images, got %#v", got.MediaImages)
+	}
+	if got.MediaImages[0].Index != 0 || got.MediaImages[1].Index != 1 {
+		t.Fatalf("expected normalized image indexes, got %#v", got.MediaImages)
+	}
+	if got.MediaImages[0].SourceURL != "https://example.com/1.webp" {
+		t.Fatalf("SourceURL was not trimmed: %#v", got.MediaImages[0])
+	}
+	if got.MediaImages[1].FileSize != 456 {
+		t.Fatalf("FileSize = %d, want 456", got.MediaImages[1].FileSize)
+	}
+}
+
 func testVideoRecord(id string, rating int) VideoRecord {
 	return VideoRecord{
 		ID:              id,
