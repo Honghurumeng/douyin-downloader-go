@@ -130,6 +130,9 @@ func main() {
 		}
 	}()
 
+	// 顺手收掉签名器 sidecar，免得留下孤儿进程（它自己也会在空闲后退出）
+	defer downloader.CloseDefaultFetcher()
+
 	app := &application{
 		rootDir:         rootDir,
 		basePath:        basePath,

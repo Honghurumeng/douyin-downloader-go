@@ -15,8 +15,6 @@ import (
 	"time"
 )
 
-const maxHTMLBytes = 12 << 20
-
 var (
 	shareLinkPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`https://v\.douyin\.com/[A-Za-z0-9_-]+/`),
@@ -107,20 +105,36 @@ type authorInfo struct {
 }
 
 type videoInfo struct {
-	PlayAddr      addressInfo `json:"play_addr"`
-	DownloadAddr  addressInfo `json:"download_addr"`
-	PlayAddrH264  addressInfo `json:"play_addr_h264"`
-	PlayAddrLowbr addressInfo `json:"play_addr_lowbr"`
-	Cover         addressInfo `json:"cover"`
-	Width         int64       `json:"width"`
-	Height        int64       `json:"height"`
-	Duration      int64       `json:"duration"`
+	PlayAddr      addressInfo   `json:"play_addr"`
+	DownloadAddr  addressInfo   `json:"download_addr"`
+	PlayAddrH264  addressInfo   `json:"play_addr_h264"`
+	PlayAddrLowbr addressInfo   `json:"play_addr_lowbr"`
+	Cover         addressInfo   `json:"cover"`
+	BitRate       []bitRateInfo `json:"bit_rate"`
+	Width         int64         `json:"width"`
+	Height        int64         `json:"height"`
+	Duration      int64         `json:"duration"`
+}
+
+// bitRateInfo 是接口返回的多档位清单，同一作品会有 540p/720p 若干条。
+// 顶层 play_addr 给哪一档并不稳定（实测同一作品时而 720p 时而 540p），
+// 所以按这里的尺寸自己挑。
+type bitRateInfo struct {
+	GearName    string      `json:"gear_name"`
+	QualityType int         `json:"quality_type"`
+	IsH265      int         `json:"is_h265"`
+	IsByteVC1   int         `json:"is_bytevc1"`
+	HDRType     string      `json:"HDR_type"`
+	PlayAddr    addressInfo `json:"play_addr"`
 }
 
 type addressInfo struct {
-	URI     string   `json:"uri"`
-	URL     string   `json:"url"`
-	URLList []string `json:"url_list"`
+	URI      string   `json:"uri"`
+	URL      string   `json:"url"`
+	URLList  []string `json:"url_list"`
+	Width    int64    `json:"width"`
+	Height   int64    `json:"height"`
+	DataSize int64    `json:"data_size"`
 }
 
 type imagePostInfo struct {
@@ -152,55 +166,11 @@ type statisticsInfo struct {
 	CollectCount int64 `json:"collect_count"`
 }
 
-func Extract(ctx context.Context, input string) (*ExtractedVideo, error) {
-	shareURL, err := extractShareURL(input)
-	if err != nil {
-		return nil, err
-	}
+// 注意：抓取入口在 api.go（走 /aweme/v1/web/aweme/detail/ 接口）。
+// 下面这些 HTML 解析函数是分享页时代留下的实现，现在只作为解析能力保留，
+// 供测试与排查用，不再出现在主链路上。
 
-	finalURL, htmlContent, err := fetchSharePage(ctx, shareURL)
-	if err != nil {
-		return nil, err
-	}
-
-	contentType := identifyContentType(finalURL)
-
-	contentID := extractContentIDFromURL(finalURL)
-	if contentID == "" {
-		return nil, fmt.Errorf("could not extract content id from %s", finalURL)
-	}
-
-	detail, err := parseContentDetail(htmlContent)
-	if err != nil {
-		return nil, err
-	}
-
-	if contentType == "video" && hasNoteImages(detail) {
-		contentType = "note"
-	}
-
-	video := extractedContentFromDetail(detail, contentType)
-	video.VideoID = firstNonEmpty(video.VideoID, contentID)
-	video.ShareURL = shareURL
-	video.OriginalURL = finalURL
-	video.ContentType = contentType
-
-	switch contentType {
-	case "video":
-		if video.VideoDownloadURL == "" {
-			return nil, errors.New("missing downloadable video URL")
-		}
-	case "note":
-		if len(video.ImageURLs) == 0 {
-			return nil, errors.New("missing downloadable image URLs")
-		}
-	default:
-		return nil, fmt.Errorf("unsupported content type %q", contentType)
-	}
-
-	return video, nil
-}
-
+// DownloadToFile 把远端的视频/图片/封面下载到本地，先写 .part 再改名，避免半截文件。
 func DownloadToFile(ctx context.Context, sourceURL, destinationPath string) (int64, error) {
 	if sourceURL == "" {
 		return 0, errors.New("empty source url")
@@ -255,40 +225,6 @@ func DownloadToFile(ctx context.Context, sourceURL, destinationPath string) (int
 	}
 
 	return written, nil
-}
-
-func fetchSharePage(ctx context.Context, shareURL string) (string, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, shareURL, nil)
-	if err != nil {
-		return "", "", fmt.Errorf("build share page request: %w", err)
-	}
-
-	applyBrowserHeaders(req)
-
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", "", fmt.Errorf("fetch share page: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("unexpected share page status: %s", resp.Status)
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxHTMLBytes))
-	if err != nil {
-		return "", "", fmt.Errorf("read share page body: %w", err)
-	}
-
-	return resp.Request.URL.String(), string(body), nil
-}
-
-func parseVideoDetail(htmlContent string) (*awemeDetail, error) {
-	return parseContentDetail(htmlContent)
 }
 
 func parseContentDetail(htmlContent string) (*awemeDetail, error) {
@@ -532,11 +468,14 @@ func extractedContentFromDetail(detail *awemeDetail, contentType string) *Extrac
 
 func extractedVideoFromDetail(detail *awemeDetail) *ExtractedVideo {
 	videoData := detail.Video
+	best := selectBestVideoAddr(videoData)
+	// 优先 play_addr：download_addr 是「保存到相册」版本，末尾会拼接三秒左右的水印片尾，
+	// 实测 5.08 秒的作品从 download_addr 下下来是 8.10 秒，和正片对不上。
 	candidateURL := firstNonEmptyURL(
-		addressURLs(videoData.DownloadAddr),
+		addressURLs(best),
 		addressURLs(videoData.PlayAddrH264),
-		addressURLs(videoData.PlayAddrLowbr),
 		addressURLs(videoData.PlayAddr),
+		addressURLs(videoData.DownloadAddr),
 	)
 
 	watermarkURL := firstURL(addressURLs(videoData.PlayAddr))
@@ -550,19 +489,25 @@ func extractedVideoFromDetail(detail *awemeDetail) *ExtractedVideo {
 		durationSeconds = durationSeconds / 1000
 	}
 
+	// 尺寸以实际选中的档位为准，避免「元数据写 720p、文件其实是 540p」
+	width, height := videoData.Width, videoData.Height
+	if best.Width > 0 && best.Height > 0 {
+		width, height = best.Width, best.Height
+	}
+
 	return &ExtractedVideo{
 		VideoID:           detail.AwemeID,
 		Title:             cleanText(firstNonEmpty(detail.Desc, detail.Title)),
 		Description:       cleanText(firstNonEmpty(detail.Desc, detail.Title)),
 		Author:            cleanText(detail.Author.Nickname),
 		AuthorID:          resolveAuthorID(detail.Author),
-		VideoURI:          firstNonEmpty(videoData.DownloadAddr.URI, videoData.PlayAddr.URI, videoData.PlayAddrH264.URI, videoData.PlayAddrLowbr.URI),
+		VideoURI:          firstNonEmpty(best.URI, videoData.DownloadAddr.URI, videoData.PlayAddr.URI, videoData.PlayAddrH264.URI, videoData.PlayAddrLowbr.URI),
 		VideoURL:          downloadURL,
 		VideoDownloadURL:  downloadURL,
 		WatermarkVideoURL: watermarkURL,
 		CoverURL:          firstNonEmptyURL(addressURLs(videoData.Cover), addressURLs(detail.Cover), addressURLs(detail.Image), addressURLs(detail.Thumb)),
-		VideoWidth:        videoData.Width,
-		VideoHeight:       videoData.Height,
+		VideoWidth:        width,
+		VideoHeight:       height,
 		Duration:          durationSeconds,
 		CreateTime:        detail.CreateTime,
 		LikeCount:         detail.Statistics.DiggCount,
@@ -572,6 +517,38 @@ func extractedVideoFromDetail(detail *awemeDetail) *ExtractedVideo {
 		CollectCount:      detail.Statistics.CollectCount,
 		ContentType:       "video",
 	}
+}
+
+// selectBestVideoAddr 从多档位里挑分辨率最高的一档（同分辨率取体积大的）。
+//
+// 会跳过 H.265/HEVC 和 HDR 档位：接口即使在请求里带了 support_h265=0 也照样返回
+// 这些档位，而它们的浏览器兼容性差（Chrome 对 HEVC 支持受限）。实测同一作品里
+// 720_1_1 这一档是 HEVC、normal_720_0 才是 H.264，前者体积更大但没法播。
+//
+// 没有任何可用档位时返回空值，交给调用方回退到顶层的 play_addr。
+func selectBestVideoAddr(videoData videoInfo) addressInfo {
+	var best addressInfo
+	var bestPixels int64
+
+	for _, rate := range videoData.BitRate {
+		if len(addressURLs(rate.PlayAddr)) == 0 {
+			continue
+		}
+		if rate.IsH265 != 0 || rate.IsByteVC1 != 0 || strings.TrimSpace(rate.HDRType) != "" {
+			continue
+		}
+
+		pixels := rate.PlayAddr.Width * rate.PlayAddr.Height
+		if pixels == 0 {
+			continue
+		}
+		if pixels > bestPixels || (pixels == bestPixels && rate.PlayAddr.DataSize > best.DataSize) {
+			best = rate.PlayAddr
+			bestPixels = pixels
+		}
+	}
+
+	return best
 }
 
 func extractedNoteFromDetail(detail *awemeDetail) *ExtractedVideo {
@@ -747,15 +724,6 @@ func isValidShareURL(raw string) bool {
 		return parsed.Path != ""
 	default:
 		return false
-	}
-}
-
-func identifyContentType(raw string) string {
-	switch {
-	case strings.Contains(raw, "/share/note/"), strings.Contains(raw, "/note/"):
-		return "note"
-	default:
-		return "video"
 	}
 }
 

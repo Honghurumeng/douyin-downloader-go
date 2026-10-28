@@ -1,0 +1,21 @@
+{
+  "name": "douyin-signer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "抖音 web 接口签名器：jsdom + secsdk 运行时，无需浏览器",
+  "main": "signer.js",
+  "bin": {
+    "douyin-signer": "signer.js"
+  },
+  "scripts": {
+    "build": "node build.js",
+    "serve": "node signer.js --serve 8099",
+    "test": "node signer.js 7700822507755451647"
+  },
+  "dependencies": {
+    "jsdom": "^30.1.3"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}
