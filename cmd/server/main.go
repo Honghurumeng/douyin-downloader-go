@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -25,6 +26,7 @@ import (
 
 	assets "douyin"
 	"douyin/internal/downloader"
+	"douyin/internal/signer"
 	"douyin/internal/store"
 )
 
@@ -46,6 +48,9 @@ const (
 	loginRateLimitMaxFails = 5
 	loginRateLimitLockout  = 15 * time.Minute
 	loginRateLimitTTL      = 24 * time.Hour
+
+	// 签名器 bundle 按 node20 编译，低于 20 不保证能跑
+	minNodeMajor = 20
 )
 
 type application struct {
@@ -201,9 +206,39 @@ func main() {
 	log.Printf("base path: %s", firstNonEmpty(app.basePath, "/"))
 	log.Printf("login password enabled: %t", app.authEnabled())
 	log.Printf("data directory: %s", filepath.Join(rootDir, "data"))
+	logSignerReadiness()
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("serve: %v", err)
 	}
+}
+
+// logSignerReadiness 在启动时就把「能不能解析」写进日志。
+//
+// 签名器虽然编进了二进制，但它要由 Node 执行；缺 node 时第一个失败请求只会返回
+// 一个 HTTP 错误，日志里连 [signer] 都不会出现——部署到新机器时最容易被这一点误导。
+func logSignerReadiness() {
+	nodePath, version, source, err := signer.Preflight()
+	if err != nil {
+		log.Printf("解析功能不可用: %v", err)
+		log.Printf("提示: 视频解析依赖 Node.js 20+；单文件版内置了运行时，源码构建可用 DOUYIN_NODE_BIN 指定路径")
+		return
+	}
+
+	log.Printf("signer: node %s 就绪（%s: %s）", version, source, nodePath)
+	if major := nodeMajorVersion(version); major > 0 && major < minNodeMajor {
+		log.Printf("警告: Node %s 低于要求的 %d.x，签名器可能启动失败", version, minNodeMajor)
+	}
+}
+
+// nodeMajorVersion 从 v22.22.2 这样的版本号里取主版本，解析不出来返回 0。
+func nodeMajorVersion(version string) int {
+	trimmed := strings.TrimPrefix(strings.TrimSpace(version), "v")
+	major, _, _ := strings.Cut(trimmed, ".")
+	value, err := strconv.Atoi(major)
+	if err != nil {
+		return 0
+	}
+	return value
 }
 
 func executableDir() (string, error) {
@@ -515,7 +550,10 @@ func (app *application) handleDownloadVideo(w http.ResponseWriter, r *http.Reque
 
 	extracted, err := downloader.Extract(ctx, shareText)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		// 解析失败的原因（缺 node、签名被拒、短链跳转失败）只出现在这里，
+		// 不写日志就只能看到前端一句笼统的提示。
+		log.Printf("extract share link failed: %v", err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": describeExtractError(err)})
 		return
 	}
 
@@ -566,6 +604,7 @@ func (app *application) handleDownloadVideo(w http.ResponseWriter, r *http.Reque
 
 		fileSize, err = downloader.DownloadToFile(ctx, extracted.VideoDownloadURL, absoluteFile)
 		if err != nil {
+			log.Printf("download media for %s failed: %v", extracted.VideoID, err)
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 			return
 		}
@@ -1300,9 +1339,68 @@ func decodeJSONBody(r *http.Request, destination any, maxBytes int64) error {
 func withJSONLogging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		startedAt := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(startedAt).Truncate(time.Millisecond))
+		recorder := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(recorder, r)
+		// 带上状态码：只看「POST /api/videos 3ms」无法判断到底成功还是失败
+		log.Printf("%s %s %d %s", r.Method, r.URL.Path, recorder.statusCode(), time.Since(startedAt).Truncate(time.Millisecond))
 	})
+}
+
+// statusRecorder 记录响应码。
+//
+// Flush / ReadFrom 必须透传：视频走 http.ServeContent，底层用 sendfile 直发，
+// 包一层如果不转发 ReaderFrom，大文件就会退化成用户态内存拷贝。
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) statusCode() int {
+	if r.status == 0 {
+		return http.StatusOK
+	}
+	return r.status
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	if r.status == 0 {
+		r.status = code
+	}
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(p []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(p)
+}
+
+func (r *statusRecorder) ReadFrom(src io.Reader) (int64, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	if readerFrom, ok := r.ResponseWriter.(io.ReaderFrom); ok {
+		return readerFrom.ReadFrom(src)
+	}
+	return io.Copy(r.ResponseWriter, src)
+}
+
+func (r *statusRecorder) Flush() {
+	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// describeExtractError 把解析失败翻译成能直接照做的提示。
+//
+// 原始错误已经写进日志了，前端只需要看到「该补什么」，不必看 exec 的底层信息。
+func describeExtractError(err error) string {
+	if errors.Is(err, signer.ErrNodeMissing) {
+		return "服务器找不到 Node.js，无法调用签名器解析抖音链接。请安装 Node.js 20+，" +
+			"或用环境变量 DOUYIN_NODE_BIN 指定 node 的绝对路径后重启服务。"
+	}
+	return err.Error()
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, payload any) {

@@ -44,6 +44,123 @@ const (
 // DefaultIdle 是 sidecar 的空闲退出时间，测试里可以调小。
 var DefaultIdle = defaultIdleTimeout
 
+// ErrNodeMissing 表示 PATH 里找不到 node。
+//
+// 这是发布态最常见、也最容易被忽略的失败原因：签名器本身已经编进二进制，
+// 但它必须由 Node 执行。单独暴露这个错误，好让上层给出可操作的提示，
+// 而不是只把一个 exec 错误丢给前端。
+var ErrNodeMissing = errors.New("signer: node not found in PATH")
+
+// node 来源，只用于日志，方便确认这份二进制到底用了哪个运行时。
+const (
+	nodeSourceEnv      = "DOUYIN_NODE_BIN"
+	nodeSourceLocal    = "二进制同目录"
+	nodeSourceEmbedded = "内置运行时"
+	nodeSourcePath     = "PATH"
+)
+
+// Preflight 探测签名器的外部依赖，返回 node 路径、版本号和来源。
+//
+// 服务启动时调用一次，把「能不能解析」提前写进日志——否则第一个失败的请求
+// 只会返回一个 HTTP 错误，日志里连 [signer] 都不会出现，很难看出是缺 node。
+//
+// 内置运行时的首次调用会解压 100MB 左右到缓存目录，放在启动阶段做，
+// 问题能早暴露，也不至于让第一个用户请求多等一两秒。
+func Preflight() (string, string, string, error) {
+	nodePath, source, err := resolveNode()
+	if err != nil {
+		return "", "", "", err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, nodePath, "--version").Output()
+	if err != nil {
+		return nodePath, "", source, fmt.Errorf("node found at %s but failed to run: %w", nodePath, err)
+	}
+
+	return nodePath, strings.TrimSpace(string(out)), source, nil
+}
+
+// resolveNode 定位 node 可执行文件。
+//
+// 查找顺序：
+//  1. DOUYIN_NODE_BIN（显式指定，最高优先级）
+//  2. 二进制所在目录 / 当前目录下的 node（发布包自带运行时，解压即用，不装也不碰 PATH）
+//  3. 内置运行时（单文件发布版，xz 压缩后编进二进制，首次使用解压到缓存目录）
+//  4. PATH
+//
+// 内置排在 PATH 前面是有意的：它是随二进制发布的确定版本，而系统里的 node
+// 可能是 12 那种跑不起来的老版本。
+func resolveNode() (string, string, error) {
+	if custom := strings.TrimSpace(os.Getenv("DOUYIN_NODE_BIN")); custom != "" {
+		abs, err := filepath.Abs(custom)
+		if err != nil {
+			return "", "", fmt.Errorf("signer: invalid DOUYIN_NODE_BIN %q: %w", custom, err)
+		}
+		info, statErr := os.Stat(abs)
+		if statErr != nil {
+			return "", "", fmt.Errorf("signer: DOUYIN_NODE_BIN points to a missing file: %s", abs)
+		}
+		if info.IsDir() {
+			return "", "", fmt.Errorf("signer: DOUYIN_NODE_BIN is a directory: %s", abs)
+		}
+		return abs, nodeSourceEnv, nil
+	}
+
+	for _, candidate := range localNodeCandidates() {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, nodeSourceLocal, nil
+		}
+	}
+
+	if EmbeddedRuntime() {
+		exe, err := ensureEmbeddedRuntime()
+		if err != nil {
+			return "", "", err
+		}
+		return exe, nodeSourceEmbedded, nil
+	}
+
+	nodePath, err := exec.LookPath("node")
+	if err != nil {
+		return "", "", fmt.Errorf("%w (需要 Node.js 20+；也可把 node 可执行文件放到二进制同目录，或用 DOUYIN_NODE_BIN 指定绝对路径)", ErrNodeMissing)
+	}
+
+	return nodePath, nodeSourcePath, nil
+}
+
+// localNodeCandidates 列出「跟着发布包走」的 node 位置。
+func localNodeCandidates() []string {
+	names := []string{"node", "node.exe", filepath.Join("runtime", "node"), filepath.Join("runtime", "bin", "node")}
+
+	var roots []string
+	seen := make(map[string]bool)
+	add := func(dir string) {
+		if dir == "" || seen[dir] {
+			return
+		}
+		seen[dir] = true
+		roots = append(roots, dir)
+	}
+
+	if exe, err := os.Executable(); err == nil {
+		add(filepath.Dir(exe))
+	}
+	if wd, err := os.Getwd(); err == nil {
+		add(wd)
+	}
+
+	candidates := make([]string, 0, len(roots)*len(names))
+	for _, root := range roots {
+		for _, name := range names {
+			candidates = append(candidates, filepath.Join(root, name))
+		}
+	}
+	return candidates
+}
+
 // Client 是一个惰性启动的签名器客户端。零值不可用，请用 New。
 type Client struct {
 	script string
@@ -112,6 +229,7 @@ func (c *Client) Detail(ctx context.Context, awemeID string) ([]byte, error) {
 		c.invalidate()
 	}
 
+	c.logger.Printf("detail %s failed: %v", awemeID, lastErr)
 	return nil, fmt.Errorf("signer: detail %s: %w", awemeID, lastErr)
 }
 
@@ -185,6 +303,9 @@ func (c *Client) ensureRunning(ctx context.Context) (string, error) {
 		// 复用已经在跑的实例（上次遗留的、或用户手工起的）
 		if c.healthy(base) {
 			c.baseURL = base
+			// 记一行：复用时不打印任何东西的话，日志里会完全看不到签名器，
+			// 排查「到底走没走到签名这一步」就没有依据了
+			c.logger.Printf("reusing sidecar on %s", base)
 			return base, nil
 		}
 		if !portFree(port) {
@@ -194,6 +315,9 @@ func (c *Client) ensureRunning(ctx context.Context) (string, error) {
 		// spawn 失败通常不是端口问题（端口在上面已经探过），而是 node 缺失、
 		// signer.js 找不到或脚本自身报错，这类问题重试也没用，直接把原因抛出去。
 		if err := c.spawn(ctx, base, port); err != nil {
+			// 必须留一行日志：这类错误只回给调用方，不写日志的话服务端日志里
+			// 一个 [signer] 前缀都不会出现，排查时完全看不出是签名器的问题。
+			c.logger.Printf("start sidecar failed: %v", err)
 			return "", err
 		}
 
@@ -212,10 +336,11 @@ func (c *Client) spawn(ctx context.Context, base string, port int) error {
 	if err != nil {
 		return err
 	}
-	nodePath, err := exec.LookPath("node")
+	nodePath, source, err := resolveNode()
 	if err != nil {
-		return fmt.Errorf("signer: node not found in PATH: %w", err)
+		return err
 	}
+	c.logger.Printf("using node from %s: %s", source, nodePath)
 
 	cmd := exec.Command(nodePath, script,
 		"--serve", strconv.Itoa(port),

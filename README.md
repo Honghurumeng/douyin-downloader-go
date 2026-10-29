@@ -127,9 +127,9 @@ GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o build/douyin-serv
 
 签名器（jsdom + secsdk 运行时，共 5.7MB）在构建时打成 `internal/signer/assets/`，通过 `go:embed` 编译进二进制。**发布只需要一个文件**：目标机器不需要 `signer/` 目录，不需要 `node_modules`，也不需要 npm。
 
-首次运行时，二进制会把内嵌的签名器释放到系统缓存目录（macOS 是 `~/Library/Caches/douyin-downloader/signer-<指纹>/`，Linux 是 `~/.cache/douyin-downloader/...`），之后直接复用。目录名带内容指纹，换版本会落到新目录。
+首次运行时，二进制会把内嵌的签名器释放到系统缓存目录（macOS 是 `~/Library/Caches/douyin-downloader/signer-<指纹>/`，Linux 是 `~/.cache/douyin-downloader/...`），之后直接复用。目录名带内容指纹：内容没变就命中缓存、不重解压；变了才落新目录，并顺带清掉旧目录（细节见「缓存与升级」）。
 
-唯一的外部依赖是 **Node.js 20+**，在 PATH 里能找到即可。
+唯一的外部依赖是 **Node.js 20+**：放进 `PATH`、放在二进制同目录、或用 `DOUYIN_NODE_BIN` 指定绝对路径，三种都行。想连这一步都省掉，用 `-tags douyin_embed_runtime` 构建，见下面「单文件发布」。
 
 脚本查找顺序：
 
@@ -158,11 +158,142 @@ GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o build/douyin-serv
 | 源码 + 有 `--require` 钩子 | 25.95 s | ok |
 | 源码，无钩子 | 2.19 s | ok |
 
+### 不想装 Node：让 node 跟着发布包走
+
+签名器本身已经在二进制里，唯一要解决的是"谁来执行这份 JS"。可以把官方的 node 可执行文件
+直接放在 `douyin-server` 旁边（或 `runtime/node`），程序启动时自己会找到它——不用安装、不用改
+PATH、systemd 里也不用配环境变量：
+
+```bash
+# 只取 tar 包里的 bin/node，落到 ./runtime/node（x64 约 110MB，压缩包 31MB）
+mkdir -p runtime
+curl -fsSL https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-x64.tar.xz \
+  | tar -xJ -C ./runtime --strip-components=2 node-v22.23.4-linux-x64/bin/node
+
+# ARM 服务器把上面两处 linux-x64 换成 linux-arm64
+
+./douyin-server-linux-amd64        # 启动日志里会显示用了哪个 node
+```
+
+查找顺序：
+
+1. `DOUYIN_NODE_BIN` 环境变量（显式指定，优先级最高）
+2. 二进制所在目录 / 当前目录下的 `node`、`runtime/node`、`runtime/bin/node`
+3. `PATH` 里的 `node`
+
+用 nvm / fnm 装的 node 通常只出现在交互式 shell 的 PATH 里，服务被 systemd、supervisor 或
+`nohup` 拉起时 PATH 很干净，这时第 1、2 条都能绕过问题：
+
+```bash
+which node      # 例如 /root/.nvm/versions/node/v22.13.0/bin/node
+DOUYIN_NODE_BIN=/root/.nvm/versions/node/v22.13.0/bin/node PORT=8080 ./douyin-server-linux-amd64
+```
+
+### 单文件发布（自带 node 运行时）
+
+上面两条路都还要求目标机器有个 node。如果就要一个文件、机器上什么都不装，可以把 node
+一起编进二进制：xz 压缩后 22～25MB，产物 42～44MB。
+
+```bash
+scripts/prepare-runtime.sh        # 生成 internal/signer/runtime/<platform>/node.xz
+
+GOOS=linux GOARCH=amd64 go build -tags douyin_embed_runtime \
+  -trimpath -ldflags='-s -w' -o build/douyin-server-linux-amd64 ./cmd/server
+```
+
+| 构建 | 产物 | 目标机器 |
+| --- | --- | --- |
+| 默认（`go build`） | **17MB** | 需要 node |
+| `-tags douyin_embed_runtime` | **42～44MB** | 什么都不需要 |
+
+首次启动会把内置的 node 解压到缓存目录（Linux `~/.cache/douyin-downloader/node-<指纹>/`，
+约 108MB，实测 2～3 秒），之后直接复用。启动日志会写明用的是哪一个：
+
+```text
+signer: node v22.23.4 就绪（内置运行时: /root/.cache/douyin-downloader/node-c7350f9a45b604ab/node）
+```
+
+此时查找顺序变成：`DOUYIN_NODE_BIN` → 二进制同目录 → **内置运行时** → `PATH`。
+内置排在 PATH 前面是有意的：它是随二进制发布的确定版本，而系统里可能躺着 node 12。
+
+#### 缓存与升级
+
+两类产物都释放到缓存目录，目录名带**内容指纹**（sha256 前 8 字节）：
+
+| 目录 | 内容 | 大小 | 指纹来源 |
+| --- | --- | --- | --- |
+| `node-<16hex>/node` | 解压后的 node | 约 112MB | 压缩包字节 |
+| `signer-<16hex>/` | 签名器脚本 + secsdk | 约 5.7MB | `signer.bundle.js` 字节 |
+
+于是升级时的行为是可预期的：
+
+- **换程序版本、但没换 node 也没换签名器** → 指纹不变，命中缓存，**不解压**，启动日志里不会出现「已释放」
+- **换了 node 版本**（比如 22.23.4 → 22.24.x）→ 新指纹，落到新目录，重新解压一次；旧目录在同一次启动里被清理
+- **签名器 bundle 变了**（抖风控更新）→ 同上，只是 5.7MB
+- **回滚到旧版本** → 旧目录如果还没被清掉就直接复用；已清掉就重解压一次，不影响正确性
+
+清理只在「确实解压了新东西」之后做，稳态启动零扫描。规则是：同类型（`node-` / `signer-`）
+且不是当前指纹、mtime 超过 10 分钟的目录会被删除，包括进程被强杀留下的 `*.tmp-*`。
+10 分钟宽限期是给滚动重启留的——新旧两个进程可能同时在跑，不能删掉对方正在用的文件。
+
+```text
+[signer] 已释放内置 node 运行时到 /root/.cache/douyin-downloader/node-<新指纹>
+[signer] 清理旧缓存 node-<旧指纹>（释放 112.0MB）
+```
+
+所以磁盘占用是有界的：稳态只有一份（112MB + 5.7MB），升级瞬间最多两份，随后回到一份。
+指纹只认内容，不认版本号：同一份 node 重新构建的二进制不会因为版本号变了而重解压。
+
+`DOUYIN_CACHE_DIR` 可以把缓存放到别处（容器里挂数据卷，避免每次重启都往 `/tmp` 里解压 112MB）：
+
+```bash
+DOUYIN_CACHE_DIR=/data/douyin-cache ./douyin-server-linux-amd64
+```
+
+`scripts/prepare-runtime.sh` 只做三件事：下载官方 node、linux 目标用 docker 里的 `strip`
+瘦身（macOS 的 strip 只认 Mach-O）、`xz -9` 压缩。产物不进 git。
+
+两个部署注意点：
+
+- **ca-certificates**：node 自带根证书，Go 用系统证书池。`slim` / `alpine` / `distroless`
+  这类极简镜像如果没装 CA，会出现「解析成功、下载失败」，报错是
+  `x509: certificate signed by unknown authority`
+- **缓存目录**：`HOME` 没有写权限（systemd 服务常见）时会退到 `/tmp`，重启后重新解压，
+  不影响功能；要固定位置就设 `DOUYIN_CACHE_DIR`
+
+### 为什么不是 Bun
+
+Bun 1.3.11 实测跑不起来，两个卡点都在 jsdom + secsdk 这一层：
+
+- 直接跑 bundle：`worker_threads.markAsUncloneable` 未实现，undici 初始化即崩（Bun 的 `node:util` 也没有这个 API）
+- 打补丁绕过之后：卡在 secsdk 初始化，`addEventListener` 抛 `'addEventListener' called on an object that is not a valid instance of EventTarget`
+- `bun build --compile` 出的单文件同样崩在第一处，而且 vendor 下的四个 secsdk 脚本是运行时 `readFileSync(__dirname/vendor/...)` 读的，编译进虚拟文件系统后路径不存在
+- 就算能跑，secsdk 是抖音持续更新的风控代码，靠逐个打补丁维持兼容，随时会被下一次更新打回原形
+
+体积上也不划算（这份 JS 一共 5.7MB）：
+
+| 方案 | 产物 | 目标机器还需要 |
+| --- | --- | --- |
+| 当前 | Go 二进制 **17MB** | node（装、或放同目录） |
+| Bun `--compile` 打包签名器 | **68MB**（hello world 起步就 61MB） | 无 |
+| Node SEA 单文件 | 约 **110MB** | 无 |
+
+也就是说：把运行时塞进单文件，代价是 4～6 倍体积；当前 17MB + 一个 node 是最省的组合。
+
 ### 排查
 
-- `signer: node not found in PATH`：机器上没装 Node，或没进 PATH
+服务启动时会打印一行签名器状态，先看这里：
+
+```text
+signer: node v22.22.2 (/usr/bin/node) 就绪          # 正常
+解析功能不可用: signer: node not found in PATH (...)    # 缺 node，解析一定失败
+```
+
+- `解析功能不可用: signer: node not found in PATH`：机器上没找到 Node。装 Node 20+、把 node 放到二进制同目录、或设置 `DOUYIN_NODE_BIN` 三者任选其一。**这种情况下日志里不会出现任何 `[signer]` 行**，因为进程根本没被拉起来；失败原因只会出现在 `POST /api/videos` 那一行的响应体里
+- `start sidecar failed: ...`：node 找到了但拉起失败，原因跟在后面（脚本缺失、版本过低等）
+- `[signer:out]` / `[signer:err]` 前缀的行是签名器自身的输出
+- `POST /api/videos 502`：解析阶段失败，紧挨着上面的 `extract share link failed:` 行就是原因
 - `signer: embedded bundle missing`：构建时没生成 `internal/signer/assets/`，回到 `signer/` 目录执行 `npm run build`
-- 日志里带 `[signer:out]` / `[signer:err]` 前缀的行是签名器的输出，它启动失败的原因会直接打在这里
 
 调试时可以手动起一个，Go 会直接复用它：
 
@@ -208,6 +339,8 @@ nohup env BASE_PATH=/douyin LOGIN_PASSWORD='your-password' PORT=8090 ./douyin-se
 | `PORT` | `8080` | HTTP 服务监听端口 |
 | `BASE_PATH` | 空 | 部署路径前缀。为空表示部署在根路径；设置为 `/douyin` 表示部署在 `/douyin/` 下 |
 | `LOGIN_PASSWORD` | 空 | 访问密码。设置后，前端会先显示密码登录页；只有服务端校验成功后，才允许加载视频、标签和本地媒体资源 |
+| `DOUYIN_NODE_BIN` | 空 | node 可执行文件的绝对路径。不设置时会先找二进制同目录的 `node` / `runtime/node`，再找内置运行时，最后找 PATH |
+| `DOUYIN_CACHE_DIR` | 空 | 缓存目录（存放解压后的 node 与签名器脚本）。默认 `<系统缓存目录>/douyin-downloader`，容器里建议指向数据卷 |
 
 参数说明：
 

@@ -47,13 +47,8 @@ func ensureAssets() (string, error) {
 		return "", err
 	}
 
-	cacheRoot, err := os.UserCacheDir()
-	if err != nil {
-		// 拿不到标准缓存目录时退到系统临时目录
-		cacheRoot = os.TempDir()
-	}
-
-	dir := filepath.Join(cacheRoot, "douyin-downloader", "signer-"+fingerprint)
+	dirName := "signer-" + fingerprint
+	dir := filepath.Join(cacheRoot(), dirName)
 	entry := filepath.Join(dir, bundleName)
 
 	if info, statErr := os.Stat(entry); statErr == nil && !info.IsDir() {
@@ -64,6 +59,9 @@ func ensureAssets() (string, error) {
 	if err := extractAssets(dir); err != nil {
 		return "", fmt.Errorf("signer: release embedded assets: %w", err)
 	}
+
+	// 只有 bundle 变了才走到这里；顺手清掉旧指纹目录（每个约 5.7MB）
+	pruneOldCache("signer", dirName)
 
 	assetPath = entry
 	return entry, nil
